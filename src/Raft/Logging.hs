@@ -75,7 +75,7 @@ logToDest :: MonadIO m => LogDest -> LogMsg -> m ()
 logToDest logDest logMsg =
   case logDest of
     LogStdout -> putText (logMsgToText logMsg)
-    LogFile fp -> liftIO $ appendFile fp (logMsgToText logMsg)
+    LogFile fp -> liftIO $ appendFile fp (logMsgToText logMsg <> "\n")
     NoLogs -> pure ()
 
 logToStdout :: MonadIO m => LogMsg -> m ()

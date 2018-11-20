@@ -25,7 +25,6 @@ module Raft
   , EventChan
 
   , RaftEnv(..)
-  , RaftNodeState(..)
   , runRaftNode
   , runRaftT
 

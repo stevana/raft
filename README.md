@@ -377,8 +377,8 @@ machine](https://github.com/adjoint-io/raft#define-the-state-machine)
 layer](https://github.com/adjoint-io/raft#implement-the-networking-layer)
 3. [Implement the persistent
 layer](https://github.com/adjoint-io/raft#implement-the-persistent-layer)
-4. [Wrapping it
-   together](https://github.com/adjoint-io/raft#wrapping-it-together)
+4. [Putting it all
+together](https://github.com/adjoint-io/raft#putting-it-all-together)
 
 ### Define the state machine
 
@@ -406,9 +406,9 @@ implement those four type classes (`RaftSendRPC`, `RaftRecvRPC`,
 
 In our example, we provide instances of nodes communicating over TCP to other
 nodes
-([Socket/Node.hs](https://github.com/adjoint-io/raft/blob/src/Examples/Raft/Socket/Node.hs))
+([Socket/Node.hs](https://github.com/adjoint-io/raft/blob/master/src/Examples/Raft/Socket/Node.hs))
 and clients
-([Socket/Client.hs](https://github.com/adjoint-io/raft/blob/src/Examples/Raft/Socket/Client.hs)).
+([Socket/Client.hs](https://github.com/adjoint-io/raft/blob/master/src/Examples/Raft/Socket/Client.hs)).
 
 Note that our datatypes will need to derive instances of `MonadThrow`,
 `MonadCatch`, `MonadMask` and `MonadConc`. This allows us to test concurrent

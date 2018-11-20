@@ -77,20 +77,20 @@ instance StateMachine Store StoreCmd where
 -- Raft instances --
 --------------------
 
-data NodeEnv sm v = NodeEnv
+data NodeEnv sm = NodeEnv
   { nEnvStore :: TVar (STM IO) sm
   , nEnvNodeId :: NodeId
   }
 
-newtype RaftExampleM sm v a = RaftExampleM { unRaftExampleM :: ReaderT (NodeEnv sm v) (RaftSocketT v (RaftFileStoreT IO)) a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader (NodeEnv sm v), Alternative, MonadPlus)
+newtype RaftExampleM sm v a = RaftExampleM { unRaftExampleM :: ReaderT (NodeEnv sm) (RaftSocketT v (RaftFileStoreT IO)) a }
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader (NodeEnv sm), Alternative, MonadPlus)
 
 deriving instance MonadThrow (RaftExampleM sm v)
 deriving instance MonadCatch (RaftExampleM sm v)
 deriving instance MonadMask (RaftExampleM sm v)
 deriving instance MonadConc (RaftExampleM sm v)
 
-runRaftExampleM :: NodeEnv sm v -> NodeSocketEnv v -> NodeFileStoreEnv -> RaftExampleM sm v a -> IO a
+runRaftExampleM :: NodeEnv sm -> NodeSocketEnv v -> NodeFileStoreEnv -> RaftExampleM sm v a -> IO a
 runRaftExampleM nodeEnv nodeSocketEnv nodeFileStoreEnv raftExampleM =
   runReaderT (unRaftFileStoreT $
     runReaderT (unRaftSocketT $
@@ -276,7 +276,7 @@ main = do
       Directory.removeDirectoryRecursive (tmpDir ++ "/" ++ toS nid)
 
 
-    initNodeEnv :: NodeId -> IO (NodeEnv Store StoreCmd)
+    initNodeEnv :: NodeId -> IO (NodeEnv Store)
     initNodeEnv nid = do
       let (host, port) = RS.nidToHostPort (toS nid)
       storeTVar <- atomically (newTVar mempty)

@@ -52,7 +52,7 @@ sendWriteRndNode cmd nids =
 sendRead :: forall v sm. (S.Serialize sm, S.Serialize v) => Proxy v -> NodeId -> RaftSocketClientM (Either [Char] (ClientResponse sm))
 sendRead _  nid = do
   socketEnv@ClientSocketEnv{..} <- ask
-  let (host, port) = nidToHostPort (toS nid)
+  let (host, port) = nidToHostPort nid
       clientId = ClientId (hostPortToNid (clientHost, clientPort))
   liftIO $ fork $ N.connect host port $ \(sock, sockAddr) -> N.send sock
     (S.encode (ClientRequestEvent (ClientRequest clientId ClientReadReq :: ClientRequest v)))
@@ -62,7 +62,7 @@ sendRead _  nid = do
 sendWrite :: (S.Serialize v, S.Serialize sm) => v -> NodeId -> RaftSocketClientM (Either [Char] (ClientResponse sm))
 sendWrite cmd nid = do
   socketEnv@ClientSocketEnv{..} <- ask
-  let (host, port) = nidToHostPort (toS nid)
+  let (host, port) = nidToHostPort nid
       clientId = ClientId (hostPortToNid (clientHost, clientPort))
   liftIO $ fork $ N.connect host port $ \(sock, sockAddr) -> N.send sock
     (S.encode (ClientRequestEvent (ClientRequest clientId (ClientWriteReq cmd))))

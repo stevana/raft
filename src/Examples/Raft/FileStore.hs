@@ -16,6 +16,7 @@ module Examples.Raft.FileStore where
 import Protolude
 
 import Control.Concurrent.Classy hiding (catch, ThreadId)
+import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
@@ -37,7 +38,7 @@ data NodeFileStoreEnv = NodeFileStoreEnv
   }
 
 newtype RaftFileStoreT m a = RaftFileStoreT { unRaftFileStoreT :: ReaderT NodeFileStoreEnv m a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader NodeFileStoreEnv, Alternative, MonadPlus, MonadTrans)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadReader NodeFileStoreEnv, Alternative, MonadPlus, MonadTrans)
 
 deriving instance MonadConc m => MonadThrow (RaftFileStoreT m)
 deriving instance MonadConc m => MonadCatch (RaftFileStoreT m)

@@ -5,3 +5,5 @@ packages:
 
 extra-deps:
 - repline-0.2.0.0
+- git: https://github.com/advancedtelematic/quickcheck-state-machine.git
+  commit: 199cf9fd4316d08a217ee02c571209ce6c0806c0

@@ -28,7 +28,6 @@ import Test.DejaFu.Internal (Settings(..))
 import Test.DejaFu.Conc hiding (ThreadId)
 import Test.Tasty
 import Test.Tasty.DejaFu hiding (get)
-import qualified Test.HUnit.DejaFu as HUnit
 
 import System.Random (mkStdGen)
 

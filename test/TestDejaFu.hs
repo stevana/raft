@@ -19,6 +19,7 @@ import qualified Data.Map as Map
 import qualified Data.Serialize as S
 import Numeric.Natural
 
+import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Conc.Class
 import Control.Concurrent.Classy.STM.TChan
@@ -28,7 +29,6 @@ import Test.DejaFu.Internal (Settings(..))
 import Test.DejaFu.Conc hiding (ThreadId)
 import Test.Tasty
 import Test.Tasty.DejaFu hiding (get)
-import qualified Test.HUnit.DejaFu as HUnit
 
 import System.Random (mkStdGen)
 
@@ -78,7 +78,7 @@ type TestNodeStates = Map NodeId TestNodeState
 
 newtype RaftTestM a = RaftTestM {
     unRaftTestM :: ReaderT TestNodeEnv (StateT TestNodeStates ConcIO) a
-  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestNodeStates)
+  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestNodeStates, MonadFail)
 
 deriving instance MonadThrow RaftTestM
 deriving instance MonadCatch RaftTestM

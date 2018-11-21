@@ -311,7 +311,7 @@ main = do
 
     clientMainHandler :: IO ()
     clientMainHandler = do
-      clientPort <- getFreePort
+      clientPort <- RS.getFreePort
       clientSocket <- RS.newSock "localhost" clientPort
       leaderIdT <- atomically (newTVar Nothing)
       let initClientState = ConsoleState
@@ -327,14 +327,7 @@ main = do
     runConsoleT :: Monad m => ConsoleState -> ConsoleT m a -> m a
     runConsoleT consoleState = flip evalStateT consoleState . unConsoleT
 
-    -- | Get a free port number.
-    getFreePort :: IO ServiceName
-    getFreePort = do
-      sock <- N.socket N.AF_INET N.Stream N.defaultProtocol
-      N.bind sock (N.SockAddrInet N.aNY_PORT N.iNADDR_ANY)
-      port <- N.socketPort sock
-      N.close sock
-      pure $ show port
+
 
     -- Tab Completion: return a completion for partial words entered
     completer :: Monad m => WordCompleter m

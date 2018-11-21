@@ -4,6 +4,7 @@ import Protolude
 
 import qualified Data.ByteString as BS
 import qualified Network.Simple.TCP as N
+import qualified Network.Socket as NS
 import qualified Data.Word8 as W8
 
 import Raft.Types
@@ -18,3 +19,12 @@ nidToHostPort bs =
   case BS.split W8._colon bs of
     [host,port] -> (toS host, toS port)
     _ -> panic "nidToHostPort: invalid node id"
+
+-- | Get a free port number.
+getFreePort :: IO N.ServiceName
+getFreePort = do
+  sock <- NS.socket NS.AF_INET NS.Stream NS.defaultProtocol
+  NS.bind sock (NS.SockAddrInet NS.aNY_PORT NS.iNADDR_ANY)
+  port <- NS.socketPort sock
+  NS.close sock
+  pure $ show port

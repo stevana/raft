@@ -248,7 +248,7 @@ testHandleAction sender action =
               (entries, prevLogIndex, prevLogTerm) <-
                 case aedEntriesSpec aeData of
                   FromIndex idx -> do
-                    eLogEntries <- runReaderT (readLogEntriesFrom (decrIndex idx)) nId
+                    eLogEntries <- runReaderT (readLogEntriesFrom (decrIndexWithDefault0 idx)) nId
                     case eLogEntries of
                       Left err -> throw err
                       Right log ->
@@ -260,7 +260,7 @@ testHandleAction sender action =
                   FromClientReq e ->
                     if entryIndex e /= Index 1
                       then do
-                        eLogEntry <- runReaderT (readLogEntry (decrIndex (entryIndex e))) nId
+                        eLogEntry <- runReaderT (readLogEntry (decrIndexWithDefault0 (entryIndex e))) nId
                         case eLogEntry of
                           Left err -> throw err
                           Right Nothing -> pure (Seq.singleton e, index0, term0)

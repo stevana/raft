@@ -80,7 +80,7 @@ class Monad m => RaftReadLog m v where
         Right Nothing -> pure (Right Empty)
         Right (Just lastLogEntry)
           | entryIndex lastLogEntry < idx -> pure (Right Empty)
-          | otherwise -> fmap (|> lastLogEntry) <$> go (decrIndex (entryIndex lastLogEntry))
+          | otherwise -> fmap (|> lastLogEntry) <$> go (decrIndexWithDefault0 (entryIndex lastLogEntry))
     where
       go idx'
         | idx' < idx || idx' == 0 = pure (Right Empty)
@@ -89,7 +89,7 @@ class Monad m => RaftReadLog m v where
             case eLogEntry of
               Left err -> pure (Left err)
               Right Nothing -> panic "Malformed log"
-              Right (Just logEntry) -> fmap (|> logEntry) <$>  go (decrIndex idx')
+              Right (Just logEntry) -> fmap (|> logEntry) <$>  go (decrIndexWithDefault0 idx')
 
 type RaftLog m v = (RaftReadLog m v, RaftWriteLog m v, RaftDeleteLog m v)
 type RaftLogExceptions m = (Exception (RaftReadLogError m), Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m))

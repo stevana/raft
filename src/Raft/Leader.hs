@@ -46,7 +46,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
   -- If AppendEntries fails (aerSuccess == False) because of log inconsistency,
   -- decrement nextIndex and retry
   | not (aerSuccess appendEntriesResp) = do
-      let newNextIndices = Map.adjust decrIndex sender (lsNextIndex ls)
+      let newNextIndices = Map.adjust decrIndexWithDefault0 sender (lsNextIndex ls)
           newLeaderState = ls { lsNextIndex = newNextIndices }
           Just newNextIndex = Map.lookup sender newNextIndices
       aeData <- mkAppendEntriesData newLeaderState (FromIndex newNextIndex)

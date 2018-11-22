@@ -62,6 +62,8 @@ index0 = Index 0
 incrIndex :: Index -> Index
 incrIndex = succ
 
-decrIndex :: Index -> Index
-decrIndex (Index 0) = index0
-decrIndex i = pred i
+-- | Decrement index.
+-- If the given index is 0, return the given index
+decrIndexWithDefault0 :: Index -> Index
+decrIndexWithDefault0 (Index 0) = index0
+decrIndexWithDefault0 i = pred i

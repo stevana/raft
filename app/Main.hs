@@ -237,8 +237,8 @@ main = do
           let nodeConfig = NodeConfig
                             { configNodeId = toS nid
                             , configNodeIds = allNodeIds
-                            , configElectionTimeout = (5000000, 15000000)
-                            , configHeartbeatTimeout = 1000000
+                            , configElectionTimeout = (1500000, 3000000)
+                            , configHeartbeatTimeout = 200000
                             }
           RaftExampleM $ lift acceptForkNode :: RaftExampleM Store StoreCmd ()
           electionTimerSeed <- liftIO randomIO

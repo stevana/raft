@@ -363,7 +363,7 @@ handleAction nodeConfig action = do
             (entries, prevLogIndex, prevLogTerm) <-
               case aedEntriesSpec aeData of
                 FromIndex idx -> do
-                  eLogEntries <- lift (readLogEntriesFrom (pred idx))
+                  eLogEntries <- lift (readLogEntriesFrom (decrIndex idx))
                   case eLogEntries of
                     Left err -> throw err
                     Right log ->

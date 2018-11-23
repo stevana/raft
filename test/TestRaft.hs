@@ -48,8 +48,9 @@ instance S.Serialize StoreCmd
 type Store = Map Var Natural
 
 instance StateMachine Store StoreCmd where
+  type StateMachineError StoreCmd = Text
   applyCommittedLogEntry store cmd =
-    case cmd of
+    Right $ case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
@@ -312,7 +313,7 @@ testHandleEvent nodeId event = do
             Left err -> throw err
             Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
             Right (Just logEntry) -> do
-              let newStateMachine = applyCommittedLogEntry stateMachine (entryValue logEntry)
+              let Right newStateMachine = applyCommittedLogEntry stateMachine (entryValue logEntry)
               updateStateMachine nId newStateMachine
               applyLogEntries nId newStateMachine
 

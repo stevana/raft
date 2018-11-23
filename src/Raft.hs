@@ -199,6 +199,7 @@ runRaftNode
   :: ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m, MonadFail m
      , StateMachine sm v
+     , Show (StateMachineError v)
      , RaftSendRPC m v
      , RaftRecvRPC m v
      , RaftSendClient m sm
@@ -237,6 +238,7 @@ handleEventLoop
      ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m, MonadFail m
      , StateMachine sm v
+     , Show (StateMachineError v)
      , RaftPersist m
      , RaftSendRPC m v
      , RaftSendClient m sm
@@ -409,6 +411,7 @@ applyLogEntries
      , RaftReadLog m v
      , Exception (RaftReadLogError m)
      , StateMachine sm v
+     , Show (StateMachineError v)
      )
   => sm
   -> RaftT v m sm
@@ -424,8 +427,9 @@ applyLogEntries stateMachine = do
           Left err -> throw err
           Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
           Right (Just logEntry) -> do
-            let newStateMachine = applyCommittedLogEntry stateMachine (entryValue logEntry)
-            applyLogEntries newStateMachine
+            case applyCommittedLogEntry stateMachine (entryValue logEntry) of
+              Left err -> panic $ "Failed to apply committed log entry: " <> show err
+              Right nsm -> applyLogEntries nsm
       else pure stateMachine
   where
     incrLastApplied :: NodeState ns -> NodeState ns

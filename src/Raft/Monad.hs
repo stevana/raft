@@ -35,7 +35,7 @@ import qualified Raft.Logging as Logging
 --update the state machine.
 class StateMachine sm v | sm -> v where
   type StateMachineError v
-  applyCommittedLogEntry :: Show (StateMachineError v) => sm -> v -> Either (StateMachineError v) sm
+  applyCommittedLogEntry :: sm -> v -> Either (StateMachineError v) sm
 
 --------------------------------------------------------------------------------
 -- Raft Monad

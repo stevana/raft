@@ -34,8 +34,9 @@ import qualified Raft.Logging as Logging
 --dependency permitting only a single state machine command to be defined to
 --update the state machine.
 class StateMachine sm v | sm -> v where
-  type StateMachineError v
-  applyCommittedLogEntry :: sm -> v -> Either (StateMachineError v) sm
+  type StateMachineError sm v
+  type StateMachineCtx sm v
+  applyCommittedLogEntry :: StateMachineCtx sm v -> sm -> v -> Either (StateMachineError sm v) sm
 
 --------------------------------------------------------------------------------
 -- Raft Monad

@@ -199,7 +199,7 @@ runRaftNode
   :: ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m, MonadFail m
      , StateMachine sm v
-     , Show (StateMachineError v)
+     , Show (StateMachineError sm v)
      , RaftSendRPC m v
      , RaftRecvRPC m v
      , RaftSendClient m sm
@@ -209,12 +209,13 @@ runRaftNode
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
-   => NodeConfig -- ^ Node configuration
-   -> LogDest -- ^ Logs destination
-   -> Int -- ^ Timer seed
-   -> sm -- ^ Initial state machine state
+   => NodeConfig           -- ^ Node configuration
+   -> LogDest              -- ^ Logs destination
+   -> Int                  -- ^ Timer seed
+   -> StateMachineCtx sm v -- ^ Context for state machine cmd applications
+   -> sm                   -- ^ Initial state machine state
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initStateMachine = do
+runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed smCtx initStateMachine = do
   eventChan <- atomically newTChan
 
   electionTimer <- newTimerRange timerSeed configElectionTimeout
@@ -231,14 +232,14 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initStateMachine = do
       raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logDest
 
   runRaftT initRaftNodeState raftEnv $
-    handleEventLoop initStateMachine
+    handleEventLoop smCtx initStateMachine
 
 handleEventLoop
   :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m, MonadFail m
      , StateMachine sm v
-     , Show (StateMachineError v)
+     , Show (StateMachineError sm v)
      , RaftPersist m
      , RaftSendRPC m v
      , RaftSendClient m sm
@@ -247,9 +248,10 @@ handleEventLoop
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
-  => sm
+  => StateMachineCtx sm v
+  -> sm
   -> RaftT v m ()
-handleEventLoop initStateMachine = do
+handleEventLoop smCtx initStateMachine = do
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
@@ -283,7 +285,7 @@ handleEventLoop initStateMachine = do
       -- Handle actions produced by core state machine
       handleActions nodeConfig actions
       -- Apply new log entries to the state machine
-      resStateMachine <- applyLogEntries stateMachine
+      resStateMachine <- applyLogEntries smCtx stateMachine
       handleEventLoop' resStateMachine resPersistentState
 
     -- In the case that a node is a follower receiving an AppendEntriesRPC
@@ -411,11 +413,12 @@ applyLogEntries
      , RaftReadLog m v
      , Exception (RaftReadLogError m)
      , StateMachine sm v
-     , Show (StateMachineError v)
+     , Show (StateMachineError sm v)
      )
-  => sm
+  => StateMachineCtx sm v
+  -> sm
   -> RaftT v m sm
-applyLogEntries stateMachine = do
+applyLogEntries smCtx stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
     if commitIndex nodeState > lastApplied nodeState
       then do
@@ -430,9 +433,9 @@ applyLogEntries stateMachine = do
             -- The command should be verified by the leader, thus all node
             -- attempting to apply the committed log entry should not fail when
             -- doing so; failure here means something has gone very wrong.
-            case applyCommittedLogEntry stateMachine (entryValue logEntry) of
+            case applyCommittedLogEntry smCtx stateMachine (entryValue logEntry) of
               Left err -> panic $ "Failed to apply committed log entry: " <> show err
-              Right nsm -> applyLogEntries nsm
+              Right nsm -> applyLogEntries smCtx nsm
       else pure stateMachine
   where
     incrLastApplied :: NodeState ns -> NodeState ns

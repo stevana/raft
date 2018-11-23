@@ -427,6 +427,9 @@ applyLogEntries stateMachine = do
           Left err -> throw err
           Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
           Right (Just logEntry) -> do
+            -- The command should be verified by the leader, thus all node
+            -- attempting to apply the committed log entry should not fail when
+            -- doing so; failure here means something has gone very wrong.
             case applyCommittedLogEntry stateMachine (entryValue logEntry) of
               Left err -> panic $ "Failed to apply committed log entry: " <> show err
               Right nsm -> applyLogEntries nsm

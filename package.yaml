@@ -1,4 +1,4 @@
-name:                raft
+name:                libraft
 version:             0.1.0.0
 github:              "adjoint-io/raft"
 license:             BSD3
@@ -61,7 +61,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - raft
+    - libraft
     - stm
 
 tests:
@@ -82,4 +82,4 @@ tests:
     - tasty-expected-failure
     - hunit-dejafu
     - QuickCheck
-    - raft
+    - libraft

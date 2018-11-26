@@ -148,7 +148,7 @@ acceptForkNode = do
     forever $ do
       recvSockM <- recv sock' 4096
       case recvSockM of
-        Nothing -> pure ()
+        Nothing -> panic "Received empty data from socket"
         Just recvSock -> case ((S.decode :: ByteString -> Either [Char] (MessageEvent v)) recvSock) of
           Left err -> panic $ toS err
           Right (ClientRequestEvent req@(ClientRequest cid _)) ->

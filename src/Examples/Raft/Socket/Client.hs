@@ -12,7 +12,6 @@ import qualified Data.Serialize as S
 import qualified Network.Simple.TCP as N
 import qualified Data.Set as Set
 import qualified Data.List as L
-import qualified Data.Maybe as Maybe
 import System.Random
 
 import Raft.Client
@@ -73,6 +72,8 @@ acceptClientConnections :: S.Serialize sm => RaftSocketClientM (Either [Char] (C
 acceptClientConnections = do
   socketEnv@ClientSocketEnv{..} <- ask
   liftIO $ N.accept clientSocket $ \(sock', sockAddr') -> do
-    recvSock <- N.recv sock' 4096
-    pure $ Maybe.fromJust (S.decode <$> recvSock)
+    recvSockM <- N.recv sock' 4096
+    case recvSockM of
+      Nothing -> pure $ Left "Received empty data from socket"
+      Just recvSock -> pure (S.decode recvSock)
 

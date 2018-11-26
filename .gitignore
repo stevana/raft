@@ -1,5 +1,5 @@
 .stack-work/
 *.sw[ponm]
-raft.cabal
+libraft.cabal
 .history
 *~

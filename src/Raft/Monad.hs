@@ -3,7 +3,9 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft.Monad where
@@ -32,7 +34,9 @@ import qualified Raft.Logging as Logging
 --dependency permitting only a single state machine command to be defined to
 --update the state machine.
 class StateMachine sm v | sm -> v where
-  applyCommittedLogEntry :: sm -> v -> sm
+  type StateMachineError sm v
+  type StateMachineCtx sm v
+  applyCommittedLogEntry :: StateMachineCtx sm v -> sm -> v -> Either (StateMachineError sm v) sm
 
 --------------------------------------------------------------------------------
 -- Raft Monad

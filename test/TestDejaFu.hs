@@ -52,8 +52,10 @@ instance S.Serialize StoreCmd
 type Store = Map Var Natural
 
 instance StateMachine Store StoreCmd where
-  applyCommittedLogEntry store cmd =
-    case cmd of
+  type StateMachineError Store StoreCmd = Text
+  type StateMachineCtx Store StoreCmd = ()
+  applyCommittedLogEntry _ store cmd =
+    Right $ case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
@@ -210,7 +212,7 @@ runTestNode :: TestNodeEnv -> TestNodeStates -> ConcIO ()
 runTestNode testEnv testState =
     runRaftTestM testEnv testState $
       runRaftT initRaftNodeState raftEnv $
-        handleEventLoop (mempty :: Store)
+        handleEventLoop () (mempty :: Store)
   where
     nid = configNodeId (testNodeConfig testEnv)
     Just eventChan = Map.lookup nid (testNodeEventChans testEnv)

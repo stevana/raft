@@ -146,13 +146,15 @@ acceptForkNode = do
   socketEnv@NodeSocketEnv{..} <- ask
   void $ fork $ void $ forever $ acceptFork nsSocket $ \(sock', sockAddr') ->
     forever $ do
-      recvSock <- recv sock' 4096
-      case Maybe.fromJust ((S.decode :: ByteString -> Either [Char] (MessageEvent v)) <$> recvSock) of
-        Left err -> panic $ toS err
-        Right (ClientRequestEvent req@(ClientRequest cid _)) ->
-          atomically $ writeTChan nsClientReqQueue req
-        Right (RPCMessageEvent msg) ->
-          atomically $ writeTChan nsMsgQueue msg
+      recvSockM <- recv sock' 4096
+      case recvSockM of
+        Nothing -> pure ()
+        Just recvSock -> case ((S.decode :: ByteString -> Either [Char] (MessageEvent v)) recvSock) of
+          Left err -> panic $ toS err
+          Right (ClientRequestEvent req@(ClientRequest cid _)) ->
+            atomically $ writeTChan nsClientReqQueue req
+          Right (RPCMessageEvent msg) ->
+            atomically $ writeTChan nsMsgQueue msg
 
 newSock :: HostName -> ServiceName -> IO Socket
 newSock host port = do

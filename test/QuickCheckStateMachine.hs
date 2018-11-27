@@ -14,7 +14,7 @@ import           Control.Monad.IO.Class        (liftIO)
 import           Data.Bifunctor                (bimap)
 import           Data.Char                     (isDigit)
 import           Data.List                     (isInfixOf, (\\))
-import           Data.Maybe                    (fromMaybe, isJust)
+import           Data.Maybe                    (fromMaybe, isNothing, isJust)
 import qualified Data.Set                      as Set
 import           Data.TreeDiff                 (ToExpr)
 import           GHC.Generics                  (Generic, Generic1)
@@ -53,63 +53,62 @@ data Action (r :: * -> *)
   | Set Integer
   | Read
   | Incr
---  | BreakConnection Side (Reference (Opaque ProcessHandle) r)
---  | FixConnection Side (Reference (Opaque ProcessHandle) r)
+  | BreakConnection (Port, Reference (Opaque ProcessHandle) r)
+  | FixConnection   (Port, Reference (Opaque ProcessHandle) r)
   deriving (Show, Generic1, Rank2.Functor, Rank2.Foldable, Rank2.Traversable)
-
-  {-
-data Side = Sender | Receiver
-  deriving Show
--}
 
 data Response (r :: * -> *)
   = SpawnedNode (Reference (Opaque ProcessHandle) r)
   | SpawnFailed Port
   | Ack
   | Value (Either String Integer)
---  | BrokeConnection
---  | FixedConnection
   deriving (Show, Generic1, Rank2.Foldable)
 
 data Model (r :: * -> *) = Model
-  { nodes :: [(Port, Reference (Opaque ProcessHandle) r)]
-  , value :: Maybe Integer
+  { nodes    :: [(Port, Reference (Opaque ProcessHandle) r)]
+  , value    :: Maybe Integer
+  , isolated :: Maybe (Port, Reference (Opaque ProcessHandle) r)
   }
   deriving (Show, Generic)
 
 deriving instance ToExpr (Model Concrete)
 
 initModel :: Model r
-initModel = Model [] Nothing
+initModel = Model [] Nothing Nothing
 
 transition :: Model r -> Action r -> Response r -> Model r
-transition Model {..} (SpawnNode port) (SpawnedNode ph) =
-  Model { nodes = nodes ++ [(port, ph)], .. }
-transition Model {..} (SpawnNode port)    (SpawnFailed _)  = Model {..}
-transition Model {..} (KillNode (port, _ph)) Ack              =
-  Model { nodes = filter ((/= port) . fst) nodes, .. }
-transition Model {..} (Set i)             Ack              =
-  Model { value = Just i, .. }
-transition Model {..} Read                (Value _i)       = Model {..}
-transition Model {..} Incr                Ack              =
-  Model { value = succ <$> value, ..}
+transition Model {..} act resp = case (act, resp) of
+  (SpawnNode port, SpawnedNode ph) -> Model { nodes = nodes ++ [(port, ph)], .. }
+  (SpawnNode port, SpawnFailed _)  -> Model {..}
+  (KillNode (port, _ph), Ack)      -> Model { nodes = filter ((/= port) . fst) nodes, .. }
+  (Set i, Ack)                     -> Model { value = Just i, .. }
+  (Read, Value _i)                 -> Model {..}
+  (Incr, Ack)                      -> Model { value = succ <$> value, ..}
+  (BreakConnection ph, Ack)        -> Model { isolated = Just ph, .. }
+  (FixConnection _ph, Ack)         -> Model { isolated = Nothing, .. }
 
 precondition :: Model Symbolic -> Action Symbolic -> Logic
-precondition Model {..} SpawnNode {} = length nodes .< 3
-precondition Model {..} KillNode  {} = length nodes .== 3
-precondition Model {..} (Set i)      = length nodes .== 3 .&& i .>= 0
-precondition Model {..} Read         = length nodes .== 3 .&& Boolean (isJust value)
-precondition Model {..} Incr         = length nodes .== 3 .&& Boolean (isJust value)
+precondition Model {..} act = case act of
+  SpawnNode {}       -> length nodes .< 3
+  KillNode  {}       -> length nodes .== 3
+  Set i              -> length nodes .== 3 .&& i .>= 0
+  Read               -> length nodes .== 3 .&& Boolean (isJust value)
+  Incr               -> length nodes .== 3 .&& Boolean (isJust value)
+  BreakConnection {} -> length nodes .== 3 .&& Boolean (isNothing isolated)
+  FixConnection   {} -> length nodes .== 3 .&& Boolean (isJust isolated)
 
 postcondition :: Model Concrete -> Action Concrete -> Response Concrete -> Logic
-postcondition Model {..} Read         (Value (Right i)) = Just i .== value
-postcondition Model {..} Read         (Value (Left e))  = Bot .// e
-postcondition _model     SpawnNode {} SpawnedNode {}    = Top
-postcondition _model     SpawnNode {} SpawnFailed {}    = Bot .// "SpawnFailed"
-postcondition _model     KillNode {}  Ack               = Top
-postcondition _model     Set {}       Ack               = Top
-postcondition _model     Incr {}      Ack               = Top
-postcondition _model     _            _                 = Bot .// "postcondition"
+postcondition Model {..} act resp = case (act, resp) of
+  (Read, Value (Right i))        -> Just i .== value
+  (Read, Value (Left e))         -> Bot .// e
+  (SpawnNode {}, SpawnedNode {}) -> Top
+  (SpawnNode {}, SpawnFailed {}) -> Bot .// "SpawnFailed"
+  (KillNode {}, Ack)             -> Top
+  (Set {}, Ack)                  -> Top
+  (Incr {}, Ack)                 -> Top
+  (BreakConnection {}, Ack)      -> Top
+  (FixConnection {}, Ack)        -> Top
+  (_,            _)              -> Bot .// "postcondition"
 
 command :: ((Handle, Handle), Handle) -> String -> IO String
 command ((sin, sout), log) cmd = do
@@ -142,8 +141,7 @@ semantics ((_sin, _sout), log) (SpawnNode port1) = do
         3001 -> (3000, 3002)
         3002 -> (3000, 3001)
   (_, _, _, ph) <- createProcess_ "raft node"
-    -- (proc "fiu-run" [ "-x", "stack", "exec", "raft-example"
-    (proc "stack"   [ "exec", "raft-example"
+    (proc "fiu-run" [ "-x", "stack", "exec", "raft-example"
                     , "localhost:" ++ show port1
                     , "localhost:" ++ show port2
                     , "localhost:" ++ show port3
@@ -158,7 +156,7 @@ semantics ((_sin, _sout), log) (SpawnNode port1) = do
     Just ec -> do
       hPutStrLn log (show ec)
       return (SpawnFailed port1)
-semantics ((_sin, _sout), log) (KillNode (_i, ph)) = do
+semantics ((_sin, _sout), log) (KillNode (_port, ph)) = do
   hPutStrLn log "Killing node"
   terminateProcess (opaque ph)
   return Ack
@@ -166,6 +164,7 @@ semantics hs (Set i) = do
   _resp <- command hs ("set x " ++ show i)
   return Ack
 semantics hs Read = do
+  -- threadDelay 1000000
   resp <- command hs "read"
   let parse = readEither
             . takeWhile isDigit
@@ -176,28 +175,20 @@ semantics hs Read = do
 semantics hs Incr = do
   _resp <- command hs "incr x"
   return Ack
---semantics h (BreakConnection side ph) = do
---  threadDelay 200000
---  hPutStrLn h "Break connection"
---  Just pid <- getPid (opaque ph)
---  case side of
---    Sender    ->
---      callCommand ("fiu-ctrl -c \"enable name=posix/io/net/sendto\" " ++ show pid)
---    Receiver ->
---      callCommand ("fiu-ctrl -c \"enable name=posix/io/net/recvfrom\" " ++ show pid)
---  threadDelay 2000000
---  return BrokeConnection
---semantics h (FixConnection side ph) = do
---  threadDelay 200000
---  hPutStrLn h "Fix connection"
---  Just pid <- getPid (opaque ph)
---  case side of
---    Sender    ->
---      callCommand ("fiu-ctrl -c \"disable name=posix/io/net/sendto\" " ++ show pid)
---    Receiver ->
---      callCommand ("fiu-ctrl -c \"disable name=posix/io/net/recvfrom\" " ++ show pid)
---  threadDelay 1000000
---  return FixedConnection
+semantics ((_sin, _sout), log) (BreakConnection (port, ph)) = do
+  hPutStrLn log ("Break connection, port: " ++ show port)
+  Just pid <- getPid (opaque ph)
+  callCommand ("fiu-ctrl -c \"enable name=posix/io/net/send\" " ++ show pid)
+  -- callCommand ("fiu-ctrl -c \"enable name=posix/io/net/recv\" " ++ show pid)
+  threadDelay 2000000
+  return Ack
+semantics ((_sin, _sout), log) (FixConnection (port, ph)) = do
+  hPutStrLn log ("Fix connection, port: " ++ show port)
+  Just pid <- getPid (opaque ph)
+  callCommand ("fiu-ctrl -c \"disable name=posix/io/net/send\" " ++ show pid)
+  -- callCommand ("fiu-ctrl -c \"disable name=posix/io/net/recv\" " ++ show pid)
+  threadDelay 2000000
+  return Ack
 
 generator :: Model Symbolic -> Gen (Action Symbolic)
 generator Model {..}
@@ -208,7 +199,9 @@ generator Model {..}
                    [ (1, Set <$> arbitrary)
                    , (5, pure Incr)
                    , (3, pure Read)
-                   , (1, KillNode <$> elements nodes)
+                   -- , (1, KillNode <$> elements nodes)
+                   , (1, BreakConnection <$> elements nodes)
+                   , (1, FixConnection   <$> elements nodes)
                    ]
 
 shrinker :: Action Symbolic -> [Action Symbolic]
@@ -216,13 +209,13 @@ shrinker (Set i) = [ Set i' | i' <- shrink i ]
 shrinker _       = []
 
 mock :: Model Symbolic -> Action Symbolic -> GenSym (Response Symbolic)
-mock _m SpawnNode {} = SpawnedNode <$> genSym
-mock _m KillNode {}  = pure Ack
-mock _m Set {}       = pure Ack
-mock _m Read {}      = pure (Value (Right 0))
-mock _m Incr {}      = pure Ack
--- mock _m BreakConnection {}       = pure BrokeConnection
--- mock _m FixConnection {}         = pure FixedConnection
+mock _m SpawnNode {}       = SpawnedNode <$> genSym
+mock _m KillNode {}        = pure Ack
+mock _m Set {}             = pure Ack
+mock _m Read {}            = pure (Value (Right 0))
+mock _m Incr {}            = pure Ack
+mock _m BreakConnection {} = pure Ack
+mock _m FixConnection {}   = pure Ack
 
 setup :: IO ((Handle, Handle), Handle)
 setup = do
@@ -263,11 +256,16 @@ sequential handles = noShrinking $
 unit_sequential :: IO ()
 unit_sequential = bracket setup clean (verboseCheck . sequential)
 
-test0 :: ((Handle, Handle), Handle) -> Property
-test0 handles = once $ monadicIO $ do
+type Handles = ((Handle, Handle), Handle)
+
+runOnce :: Commands Action -> Handles -> Property
+runOnce cmds handles = once $ monadicIO $ do
   (hist, model, res) <- runCommands (sm handles) cmds
   prettyCommands (sm handles) hist (res === Ok)
   liftIO (mapM_ (terminateProcess . opaque . snd) (nodes model))
+
+test0 :: Handles -> Property
+test0 = runOnce cmds
   where
     cmds = Commands
       [ Command (SpawnNode 3000)
@@ -289,11 +287,8 @@ test0 handles = once $ monadicIO $ do
 unit_test0 :: IO ()
 unit_test0 = bracket setup clean (verboseCheck . test0)
 
-test1 :: ((Handle, Handle), Handle) -> Property
-test1 handles = once $ monadicIO $ do
-  (hist, model, res) <- runCommands (sm handles) cmds
-  prettyCommands (sm handles) hist (res === Ok)
-  liftIO (mapM_ (terminateProcess . opaque . snd) (nodes model))
+test1 :: Handles -> Property
+test1 = runOnce cmds
   where
     cmds = Commands
       [ Command (SpawnNode 3002) (Set.fromList [ Var 0 ])
@@ -309,3 +304,23 @@ test1 handles = once $ monadicIO $ do
 
 unit_test1 :: IO ()
 unit_test1 = bracket setup clean (verboseCheck . test1)
+
+test2 :: Handles -> Property
+test2 = runOnce cmds
+  where
+    cmds = Commands
+      [ Command (SpawnNode 3002) (Set.fromList [ Var 0 ])
+      , Command (SpawnNode 3001) (Set.fromList [ Var 1 ])
+      , Command (SpawnNode 3000) (Set.fromList [ Var 2 ])
+      , Command (Set 7) Set.empty
+      , Command Incr Set.empty
+      , Command
+          (BreakConnection ( 3002 , Reference (Symbolic (Var 0)) ))
+          Set.empty
+      , Command
+          (FixConnection ( 3002 , Reference (Symbolic (Var 0)) )) Set.empty
+      , Command Read Set.empty
+      ]
+
+unit_test2 :: IO ()
+unit_test2 = bracket setup clean (verboseCheck . test2)

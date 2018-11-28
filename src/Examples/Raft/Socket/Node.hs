@@ -21,7 +21,6 @@ import Protolude hiding
   )
 
 import Control.Concurrent.Classy hiding (catch, ThreadId)
-import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
@@ -48,7 +47,7 @@ data NodeSocketEnv v = NodeSocketEnv
 
 
 newtype RaftSocketT v m a = RaftSocketT { unRaftSocketT :: ReaderT (NodeSocketEnv v) m a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadReader (NodeSocketEnv v), Alternative, MonadPlus, MonadTrans)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader (NodeSocketEnv v), Alternative, MonadPlus, MonadTrans)
 
 deriving instance MonadConc m => MonadThrow (RaftSocketT v m)
 deriving instance MonadConc m => MonadCatch (RaftSocketT v m)

@@ -109,7 +109,6 @@ import Control.Concurrent.STM.Timer
 import Control.Concurrent.Classy.STM.TChan
 import Control.Concurrent.Classy.Async
 
-import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
@@ -162,7 +161,7 @@ data RaftEnv v m = RaftEnv
 
 newtype RaftT v m a = RaftT
   { unRaftT :: ReaderT (RaftEnv v m) (StateT RaftNodeState m) a
-  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState RaftNodeState, MonadFail, Alternative, MonadPlus)
+  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState RaftNodeState, Alternative, MonadPlus)
 
 instance MonadTrans (RaftT v) where
   lift = RaftT . lift . lift
@@ -197,7 +196,7 @@ logDebug msg = flip logDebugIO msg =<< asks raftNodeLogDest
 -- It should run forever
 runRaftNode
   :: ( Show v, Show sm, Show (Action sm v)
-     , MonadIO m, MonadConc m, MonadFail m
+     , MonadIO m, MonadConc m
      , StateMachine sm v
      , Show (StateMachineError sm v)
      , RaftSendRPC m v
@@ -237,7 +236,7 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed smCtx initStateMachine =
 handleEventLoop
   :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
-     , MonadIO m, MonadConc m, MonadFail m
+     , MonadIO m, MonadConc m
      , StateMachine sm v
      , Show (StateMachineError sm v)
      , RaftPersist m

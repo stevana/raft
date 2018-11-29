@@ -44,7 +44,6 @@ data NodeSocketEnv v = NodeSocketEnv
   , nsClientReqQueue :: TChan (STM IO) (ClientRequest v)
   }
 
-
 newtype RaftSocketT v m a = RaftSocketT { unRaftSocketT :: ReaderT (NodeSocketEnv v) m a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader (NodeSocketEnv v), Alternative, MonadPlus, MonadTrans)
 
@@ -64,9 +63,10 @@ instance (MonadIO m, MonadConc m, S.Serialize sm) => RaftSendClient (RaftSocketT
       send cSock (S.encode msg)
 
 instance (MonadIO m, MonadConc m, S.Serialize v) => RaftRecvClient (RaftSocketT v m) v where
+  type RaftRecvClientError (RaftSocketT v m) v = Text
   receiveClient = do
     cReq <- asks nsClientReqQueue
-    liftIO $ atomically $ readTChan cReq
+    fmap Right . liftIO . atomically $ readTChan cReq
 
 instance (MonadIO m, MonadConc m, S.Serialize v, Show v) => RaftSendRPC (RaftSocketT v m) v where
   sendRPC nid msg = do
@@ -88,9 +88,10 @@ instance (MonadIO m, MonadConc m, S.Serialize v, Show v) => RaftSendRPC (RaftSoc
       (host, port) = nidToHostPort nid
 
 instance (MonadIO m, MonadConc m, Show v) => RaftRecvRPC (RaftSocketT v m) v where
+  type RaftRecvRPCError (RaftSocketT v m) v = Text
   receiveRPC = do
     msgQueue <- asks nsMsgQueue
-    liftIO $ atomically $ readTChan msgQueue
+    fmap Right . liftIO . atomically $ readTChan msgQueue
 
 
 -----------

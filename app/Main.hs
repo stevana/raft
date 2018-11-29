@@ -108,12 +108,14 @@ instance RaftSendClient (RaftExampleM Store StoreCmd) Store where
   sendClient cid msg = (RaftExampleM . lift) $ sendClient cid msg
 
 instance RaftRecvClient (RaftExampleM Store StoreCmd) StoreCmd where
+  type RaftRecvClientError (RaftExampleM Store StoreCmd) StoreCmd = Text
   receiveClient = RaftExampleM $ lift receiveClient
 
 instance RaftSendRPC (RaftExampleM Store StoreCmd) StoreCmd where
   sendRPC nid msg = (RaftExampleM . lift) $ sendRPC nid msg
 
 instance RaftRecvRPC (RaftExampleM Store StoreCmd) StoreCmd where
+  type RaftRecvRPCError (RaftExampleM Store StoreCmd) StoreCmd = Text
   receiveRPC = RaftExampleM $ lift receiveRPC
 
 instance RaftWriteLog (RaftExampleM Store StoreCmd) StoreCmd where

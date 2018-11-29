@@ -122,31 +122,13 @@ import Raft.Config
 import Raft.Event
 import Raft.Handle
 import Raft.Log
-import Raft.Logging hiding (logInfo, logDebug)
+import Raft.Logging hiding (logInfo, logDebug, logCritical)
 import Raft.Monad hiding (logInfo, logDebug)
 import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC
 import Raft.Types
 
-
--- | Interface for nodes to send messages to one
--- another. E.g. Control.Concurrent.Chan, Network.Socket, etc.
-class RaftSendRPC m v where
-  sendRPC :: NodeId -> RPCMessage v -> m ()
-
--- | Interface for nodes to receive messages from one
--- another
-class RaftRecvRPC m v where
-  receiveRPC :: m (RPCMessage v)
-
--- | Interface for Raft nodes to send messages to clients
-class RaftSendClient m sm where
-  sendClient :: ClientId -> ClientResponse sm -> m ()
-
--- | Interface for Raft nodes to receive messages from clients
-class RaftRecvClient m v where
-  receiveClient :: m (ClientRequest v)
 
 type EventChan m v = TChan (STM m) (Event v)
 
@@ -191,6 +173,9 @@ runRaftT raftNodeState raftEnv =
 logDebug :: MonadIO m => Text -> RaftT v m ()
 logDebug msg = flip logDebugIO msg =<< asks raftNodeLogDest
 
+logCritical :: MonadIO m => Text -> RaftT v m ()
+logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogDest
+
 ------------------------------------------------------------------------------
 
 -- | Run timers, RPC and client request handlers and start event loop.
@@ -220,17 +205,19 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
   electionTimer <- newTimerRange timerSeed configElectionTimeout
   heartbeatTimer <- newTimer configHeartbeatTimeout
 
-  -- Fork all event producers to run concurrently
-  fork (electionTimeoutTimer electionTimer eventChan)
-  fork (heartbeatTimeoutTimer heartbeatTimer eventChan)
-  fork (rpcHandler eventChan)
-  fork (clientReqHandler eventChan)
-
   let resetElectionTimer = resetTimer electionTimer
       resetHeartbeatTimer = resetTimer heartbeatTimer
       raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logDest
 
-  runRaftT initRaftNodeState raftEnv $
+  runRaftT initRaftNodeState raftEnv $ do
+
+    -- Fork all event producers to run concurrently
+    lift $ fork (electionTimeoutTimer electionTimer eventChan)
+    lift $ fork (heartbeatTimeoutTimer heartbeatTimer eventChan)
+    fork (rpcHandler eventChan)
+    fork (clientReqHandler eventChan)
+
+    -- Start the main event handling loop
     handleEventLoop initRSM
 
 handleEventLoop
@@ -464,28 +451,38 @@ handleLogs logs = do
   mapM_ (logToDest logDest) logs
 
 ------------------------------------------------------------------------------
- --Event Producers
+-- Event Producers
 ------------------------------------------------------------------------------
 
 -- | Producer for rpc message events
 rpcHandler
-  :: (MonadConc m, Show v, RaftRecvRPC m v)
+  :: (MonadIO m, MonadConc m, Show v, RaftRecvRPC m v)
   => TChan (STM m) (Event v)
-  -> m ()
+  -> RaftT v m ()
 rpcHandler eventChan =
-  forever $
-    receiveRPC >>= \rpcMsg -> do
-      atomically $ writeTChan eventChan (MessageEvent (RPCMessageEvent rpcMsg))
+  forever $ do
+    eRpcMsg <- lift $ Control.Monad.Catch.try receiveRPC
+    case eRpcMsg of
+      Left (err :: SomeException) -> logCritical (show err)
+      Right (Left err) -> logCritical (show err)
+      Right (Right rpcMsg) -> do
+        let rpcMsgEvent = MessageEvent (RPCMessageEvent rpcMsg)
+        atomically $ writeTChan eventChan rpcMsgEvent
 
 -- | Producer for rpc message events
 clientReqHandler
-  :: (MonadConc m, RaftRecvClient m v)
+  :: (MonadIO m, MonadConc m, RaftRecvClient m v)
   => TChan (STM m) (Event v)
-  -> m ()
+  -> RaftT v m ()
 clientReqHandler eventChan =
-  forever $
-    receiveClient >>= \clientReq ->
-      atomically $ writeTChan eventChan (MessageEvent (ClientRequestEvent clientReq))
+  forever $ do
+    eClientReq <- lift $ Control.Monad.Catch.try receiveClient
+    case eClientReq of
+      Left (err :: SomeException) -> logCritical (show err)
+      Right (Left err) -> logCritical (show err)
+      Right (Right clientReq) -> do
+        let clientReqEvent = MessageEvent (ClientRequestEvent clientReq)
+        atomically $ writeTChan eventChan clientReqEvent
 
 -- | Producer for the election timeout event
 electionTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v) -> m ()

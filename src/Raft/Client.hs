@@ -1,4 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Raft.Client where
 
@@ -8,6 +11,15 @@ import qualified Data.Serialize as S
 
 import Raft.NodeState
 import Raft.Types
+
+-- | Interface for Raft nodes to send messages to clients
+class RaftSendClient m sm where
+  sendClient :: ClientId -> ClientResponse sm -> m ()
+
+-- | Interface for Raft nodes to receive messages from clients
+class Show (RaftRecvClientError m v) => RaftRecvClient m v where
+  type RaftRecvClientError m v
+  receiveClient :: m (Either (RaftRecvClientError m v) (ClientRequest v))
 
 -- | Representation of a client request coupled with the client id
 data ClientRequest v

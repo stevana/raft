@@ -1,7 +1,9 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Raft.RPC where
 
@@ -11,6 +13,17 @@ import Data.Serialize
 
 import Raft.Log
 import Raft.Types
+
+-- | Interface for nodes to send messages to one
+-- another. E.g. Control.Concurrent.Chan, Network.Socket, etc.
+class RaftSendRPC m v where
+  sendRPC :: NodeId -> RPCMessage v -> m ()
+
+-- | Interface for nodes to receive messages from one
+-- another
+class Show (RaftRecvRPCError m v) => RaftRecvRPC m v where
+  type RaftRecvRPCError m v
+  receiveRPC :: m (Either (RaftRecvRPCError m v) (RPCMessage v))
 
 -- | Representation of a message sent between nodes
 data RPCMessage v = RPCMessage

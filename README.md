@@ -14,7 +14,7 @@ for further details about the protocol.
 
 Raft proposes a strong single-leader approach to consensus. It simplifies
 operations, as there are no conflicts, while being more efficient than other
-leader-less approaches due to the high throughput acheivable by the leader. In
+leader-less approaches due to the high throughput achievable by the leader. In
 this leader-driven consensus algorithm, clients must contact the leader directly
 in order to communicate with the system. The system needs to have an
 elected leader in order to be available.
@@ -87,7 +87,7 @@ data NodeState (a :: Mode) where
 The library's main event loop is comprised of a simple flow: Raft nodes receive
 events on an STM channel, handle the event depending on the current node state,
 return a list of actions to perform, and then perform those actions in the order
-they were generated. The `Event` type specificies the main value to which raft
+they were generated. The `Event` type specifies the main value to which raft
 nodes react to, whereas the `Action` type specifies the action the raft node
 performs as a result of the pairing of the current node state and received
 event.
@@ -144,7 +144,7 @@ handler :: NodeState init -> ... relevant handler data ... -> ResultState init
 Statically, the `ResultState` will enforce that invalid transitions are not made
 when writing handlers for all combinations of raft node modes and events. In the
 future, this approach may be extended to limit the actions a node can emit
-dependent on it's current mode.
+dependent on its current mode.
 
 ## Library Architecture
 
@@ -200,7 +200,7 @@ entries. Since persisting data is an action that programmers have many opinions
 and preferences regarding, we provide two type classes that abstract the
 specifics of writing log entries to disk as well as a few other small bits of
 relevant data. These are separated due to the nature in which the log entries
-are queried, often by specific index and without bounds. Thus it may be
+are queried, often by specific index and without bounds. Thus, it may be
 desirable to store the log entries in an efficient database. The remaining
 persistent data is always read and written atomically, and has a much smaller
 storage footprint.
@@ -311,7 +311,7 @@ We have written a default implementation for network sockets over TCP in
 # Run example
 
 We provide a complete example of the library where nodes communicate via network
-sockets and they write their logs on text files. See
+sockets, and they write their logs on text files. See
 [app/Main.hs](https://github.com/adjoint-io/raft/blob/master/app/Main.hs) to
 have further insight.
 

@@ -47,14 +47,13 @@ instance S.Serialize StoreCmd
 
 type Store = Map Var Natural
 
-instance StateMachine Store StoreCmd where
-  type StateMachineError Store StoreCmd = Text
-  type StateMachineCtx Store StoreCmd = ()
-  applyCommittedLogEntry _ store cmd =
+instance RSMP Store StoreCmd where
+  data RSMPError Store StoreCmd = StoreError Text deriving (Show)
+  type RSMPCtx Store StoreCmd = ()
+  applyCmdRSMP _ store cmd =
     Right $ case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
-
 
 testVar :: Var
 testVar = "test"
@@ -314,7 +313,7 @@ testHandleEvent nodeId event = do
             Left err -> throw err
             Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
             Right (Just logEntry) -> do
-              let Right newStateMachine = applyCommittedLogEntry () stateMachine (entryValue logEntry)
+              let Right newStateMachine = applyCmdRSMP () stateMachine (entryValue logEntry)
               updateStateMachine nId newStateMachine
               applyLogEntries nId newStateMachine
 

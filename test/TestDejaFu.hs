@@ -50,13 +50,19 @@ instance S.Serialize StoreCmd
 
 type Store = Map Var Natural
 
-instance StateMachine Store StoreCmd where
-  type StateMachineError Store StoreCmd = Text
-  type StateMachineCtx Store StoreCmd = ()
-  applyCommittedLogEntry _ store cmd =
+data StoreCtx = StoreCtx
+
+instance RSMP Store StoreCmd where
+  data RSMPError Store StoreCmd = StoreError Text deriving (Show)
+  type RSMPCtx Store StoreCmd = StoreCtx
+  applyCmdRSMP _ store cmd =
     Right $ case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
+
+instance RSM Store StoreCmd RaftTestM where
+  validateCmd _ = pure (Right ())
+  askRSMPCtx = pure StoreCtx
 
 type TestEventChan = EventChan ConcIO StoreCmd
 type TestClientRespChan = TChan (STM ConcIO) (ClientResponse Store)
@@ -211,7 +217,7 @@ runTestNode :: TestNodeEnv -> TestNodeStates -> ConcIO ()
 runTestNode testEnv testState =
     runRaftTestM testEnv testState $
       runRaftT initRaftNodeState raftEnv $
-        handleEventLoop () (mempty :: Store)
+        handleEventLoop (mempty :: Store)
   where
     nid = configNodeId (testNodeConfig testEnv)
     Just eventChan = Map.lookup nid (testNodeEventChans testEnv)

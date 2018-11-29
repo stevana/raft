@@ -25,7 +25,6 @@ import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
 import qualified Data.Map as Map
-import qualified Data.Maybe as Maybe
 import qualified Data.Serialize as S
 import qualified Network.Simple.TCP as NS
 import Network.Simple.TCP
@@ -160,5 +159,3 @@ newSock host port = do
   (sock, _) <- bindSock (Host host) port
   listenSock sock 2048
   pure sock
-
-

@@ -67,13 +67,18 @@ instance S.Serialize StoreCmd
 
 type Store = Map Var Natural
 
-instance StateMachine Store StoreCmd where
-  type StateMachineError Store StoreCmd = Text
-  type StateMachineCtx Store StoreCmd = ()
-  applyCommittedLogEntry _ store cmd =
+instance RSMP Store StoreCmd where
+  data RSMPError Store StoreCmd = StoreError Text deriving (Show)
+  type RSMPCtx Store StoreCmd = ()
+
+  applyCmdRSMP _ store cmd =
     Right $ case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
+
+instance (sm ~ Store, v ~ StoreCmd, RSMP sm v) => RSM sm v (RaftExampleM sm v) where
+  validateCmd _ = pure (Right ())
+  askRSMPCtx = pure ()
 
 --------------------
 -- Raft instances --
@@ -243,7 +248,7 @@ main = do
                             }
           RaftExampleM $ lift acceptForkNode :: RaftExampleM Store StoreCmd ()
           electionTimerSeed <- liftIO randomIO
-          runRaftNode nodeConfig LogStdout electionTimerSeed () (mempty :: Store)
+          runRaftNode nodeConfig LogStdout electionTimerSeed (mempty :: Store)
   where
     initPersistentFile :: NodeId -> IO ()
     initPersistentFile nid = do

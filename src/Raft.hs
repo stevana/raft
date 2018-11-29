@@ -13,7 +13,8 @@
 module Raft
   (
   -- * State machine type class
-    StateMachine(..)
+    RSMP(..)
+  , RSM(..)
 
   -- * Networking type classes
   , RaftSendRPC(..)
@@ -197,8 +198,8 @@ logDebug msg = flip logDebugIO msg =<< asks raftNodeLogDest
 runRaftNode
   :: ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m
-     , StateMachine sm v
-     , Show (StateMachineError sm v)
+     , RSM sm v m
+     , Show (RSMPError sm v)
      , RaftSendRPC m v
      , RaftRecvRPC m v
      , RaftSendClient m sm
@@ -211,10 +212,9 @@ runRaftNode
    => NodeConfig           -- ^ Node configuration
    -> LogDest              -- ^ Logs destination
    -> Int                  -- ^ Timer seed
-   -> StateMachineCtx sm v -- ^ Context for state machine cmd applications
    -> sm                   -- ^ Initial state machine state
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed smCtx initStateMachine = do
+runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
   eventChan <- atomically newTChan
 
   electionTimer <- newTimerRange timerSeed configElectionTimeout
@@ -231,14 +231,14 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed smCtx initStateMachine =
       raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logDest
 
   runRaftT initRaftNodeState raftEnv $
-    handleEventLoop smCtx initStateMachine
+    handleEventLoop initRSM
 
 handleEventLoop
   :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m
-     , StateMachine sm v
-     , Show (StateMachineError sm v)
+     , RSM sm v m
+     , Show (RSMPError sm v)
      , RaftPersist m
      , RaftSendRPC m v
      , RaftSendClient m sm
@@ -247,14 +247,13 @@ handleEventLoop
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
-  => StateMachineCtx sm v
-  -> sm
+  => sm
   -> RaftT v m ()
-handleEventLoop smCtx initStateMachine = do
+handleEventLoop initRSM = do
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
-      Right pstate -> handleEventLoop' initStateMachine pstate
+      Right pstate -> handleEventLoop' initRSM pstate
   where
     handleEventLoop' :: sm -> PersistentState -> RaftT v m ()
     handleEventLoop' stateMachine persistentState = do
@@ -284,8 +283,8 @@ handleEventLoop smCtx initStateMachine = do
       -- Handle actions produced by core state machine
       handleActions nodeConfig actions
       -- Apply new log entries to the state machine
-      resStateMachine <- applyLogEntries smCtx stateMachine
-      handleEventLoop' resStateMachine resPersistentState
+      resRSM <- applyLogEntries stateMachine
+      handleEventLoop' resRSM resPersistentState
 
     -- In the case that a node is a follower receiving an AppendEntriesRPC
     -- Event, read the log at the aePrevLogIndex
@@ -308,7 +307,7 @@ handleEventLoop smCtx initStateMachine = do
 handleActions
   :: ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m
-     , StateMachine sm v
+     , RSM sm v m
      , RaftSendRPC m v
      , RaftSendClient m sm
      , RaftLog m v
@@ -323,7 +322,7 @@ handleAction
   :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m
-     , StateMachine sm v
+     , RSM sm v m
      , RaftSendRPC m v
      , RaftSendClient m sm
      , RaftLog m v
@@ -411,13 +410,12 @@ applyLogEntries
      , MonadConc m
      , RaftReadLog m v
      , Exception (RaftReadLogError m)
-     , StateMachine sm v
-     , Show (StateMachineError sm v)
+     , RSM sm v m
+     , Show (RSMPError sm v)
      )
-  => StateMachineCtx sm v
-  -> sm
+  => sm
   -> RaftT v m sm
-applyLogEntries smCtx stateMachine = do
+applyLogEntries stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
     if commitIndex nodeState > lastApplied nodeState
       then do
@@ -432,9 +430,10 @@ applyLogEntries smCtx stateMachine = do
             -- The command should be verified by the leader, thus all node
             -- attempting to apply the committed log entry should not fail when
             -- doing so; failure here means something has gone very wrong.
-            case applyCommittedLogEntry smCtx stateMachine (entryValue logEntry) of
+            eRes <- lift (applyCmdRSM stateMachine (entryValue logEntry))
+            case eRes of
               Left err -> panic $ "Failed to apply committed log entry: " <> show err
-              Right nsm -> applyLogEntries smCtx nsm
+              Right nsm -> applyLogEntries nsm
       else pure stateMachine
   where
     incrLastApplied :: NodeState ns -> NodeState ns

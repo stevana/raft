@@ -26,7 +26,7 @@ import Raft.Logging (LogMsg)
 -- | Main entry point for handling events
 handleEvent
   :: forall sm v.
-     (StateMachine sm v, Show v)
+     (RSMP sm v, Show v)
   => RaftNodeState
   -> TransitionEnv sm
   -> PersistentState
@@ -136,7 +136,7 @@ mkRaftHandler nodeState =
 
 handleEvent'
   :: forall ns sm v.
-     (StateMachine sm v, Show v)
+     (RSMP sm v, Show v)
   => NodeState ns
   -> TransitionEnv sm
   -> PersistentState

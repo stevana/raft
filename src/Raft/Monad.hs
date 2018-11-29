@@ -6,6 +6,8 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft.Monad where
@@ -33,10 +35,24 @@ import qualified Raft.Logging as Logging
 -- | Interface to handle commands in the underlying state machine. Functional
 --dependency permitting only a single state machine command to be defined to
 --update the state machine.
-class StateMachine sm v | sm -> v where
-  type StateMachineError sm v
-  type StateMachineCtx sm v
-  applyCommittedLogEntry :: StateMachineCtx sm v -> sm -> v -> Either (StateMachineError sm v) sm
+
+class RSMP sm v | sm -> v where
+  data RSMPError sm v
+  type RSMPCtx sm v = ctx | ctx -> sm v
+  applyCmdRSMP :: RSMPCtx sm v -> sm -> v -> Either (RSMPError sm v) sm
+
+class (Monad m, RSMP sm v) => RSM sm v m | m sm -> v where
+  validateCmd :: v -> m (Either (RSMPError sm v) ())
+  askRSMPCtx :: m (RSMPCtx sm v)
+
+applyCmdRSM :: RSM sm v m => sm -> v -> m (Either (RSMPError sm v) sm)
+applyCmdRSM sm v = do
+  res <- validateCmd v
+  case res of
+    Left err -> pure (Left err)
+    Right () -> do
+      ctx <- askRSMPCtx
+      pure (applyCmdRSMP ctx sm v)
 
 --------------------------------------------------------------------------------
 -- Raft Monad

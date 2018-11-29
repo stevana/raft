@@ -96,10 +96,10 @@ type RaftLogExceptions m = (Exception (RaftReadLogError m), Exception (RaftWrite
 
 -- | Representation of possible errors that come from reading, writing or
 -- deleting logs from the persistent storage
-data RaftLogError m where
-  RaftLogReadError :: RaftReadLogError m -> RaftLogError m
-  RaftLogWriteError :: RaftWriteLogError m -> RaftLogError m
-  RaftLogDeleteError :: RaftDeleteLogError m -> RaftLogError m
+data RaftLogError m
+  = RaftLogReadError (RaftReadLogError m)
+  | RaftLogWriteError (RaftWriteLogError m)
+  | RaftLogDeleteError (RaftDeleteLogError m)
 
 updateLog
   :: forall m v.

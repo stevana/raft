@@ -287,7 +287,7 @@ handleEventLoop initRSM = do
                 Left err -> throw err
                 Right (mEntry :: Maybe (Entry v)) -> put $
                   RaftNodeState $ NodeFollowerState fs
-                    { fsEntryTermAtAEIndex = entryTerm <$> mEntry }
+                    { fsTermAtAEPrevIndex = entryTerm <$> mEntry }
             _ -> pure ()
         _ -> pure ()
 
@@ -361,16 +361,8 @@ handleAction nodeConfig action = do
                           | idx == 1 -> pure (log, index0, term0)
                           | otherwise -> pure (entries, entryIndex pe, entryTerm pe)
                         _ -> pure (log, index0, term0)
-                FromClientReq e -> do
-                  if entryIndex e /= Index 1
-                    then do
-                      eLogEntry <- lift $ readLogEntry (entryIndex e)
-                      case eLogEntry of
-                        Left err -> throw err
-                        Right Nothing -> pure (singleton e, index0, term0)
-                        Right (Just (prevEntry :: Entry v)) ->
-                          pure (singleton e, entryIndex prevEntry, entryTerm prevEntry)
-                    else pure (singleton e, index0, term0)
+                FromClientReq e -> prevEntryData e
+                FromNewLeader e -> prevEntryData e
                 NoEntries _ -> do
                   let (lastLogIndex, lastLogTerm) = getLastLogEntryData ns
                   pure (Empty, lastLogIndex, lastLogTerm)
@@ -387,6 +379,17 @@ handleAction nodeConfig action = do
           SendAppendEntriesResponseRPC aer -> pure (toRPC aer)
           SendRequestVoteRPC rv -> pure (toRPC rv)
           SendRequestVoteResponseRPC rvr -> pure (toRPC rvr)
+
+    prevEntryData e
+      | entryIndex e == Index 1 = pure (singleton e, index0, term0)
+      | otherwise = do
+          let prevLogEntryIdx = decrIndexWithDefault0 (entryIndex e)
+          eLogEntry <- lift $ readLogEntry prevLogEntryIdx
+          case eLogEntry of
+            Left err -> throw err
+            Right Nothing -> pure (singleton e, index0, term0)
+            Right (Just (prevEntry :: Entry v)) ->
+              pure (singleton e, entryIndex prevEntry, entryTerm prevEntry)
 
 -- If commitIndex > lastApplied: increment lastApplied, apply
 -- log[lastApplied] to state machine (Section 5.3) until the state machine
@@ -417,7 +420,7 @@ applyLogEntries stateMachine = do
             -- The command should be verified by the leader, thus all node
             -- attempting to apply the committed log entry should not fail when
             -- doing so; failure here means something has gone very wrong.
-            eRes <- lift (applyCmdRSM stateMachine (entryValue logEntry))
+            eRes <- lift (applyEntryRSM stateMachine logEntry)
             case eRes of
               Left err -> panic $ "Failed to apply committed log entry: " <> show err
               Right nsm -> applyLogEntries nsm

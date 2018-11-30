@@ -85,7 +85,7 @@ initRaftNodeState =
       , fsLastApplied = index0
       , fsCurrentLeader = NoLeader
       , fsLastLogEntryData = (index0, term0)
-      , fsEntryTermAtAEIndex = Nothing
+      , fsTermAtAEPrevIndex = Nothing
       }
 
 deriving instance Show RaftNodeState
@@ -116,7 +116,7 @@ data FollowerState = FollowerState
     -- ^ Index of highest log entry applied to state machine
   , fsLastLogEntryData :: (Index, Term)
     -- ^ Index and term of the last log entry in the node's log
-  , fsEntryTermAtAEIndex :: Maybe Term
+  , fsTermAtAEPrevIndex :: Maybe Term
     -- ^ The term of the log entry specified in and AppendEntriesRPC
   } deriving (Show)
 
@@ -143,7 +143,7 @@ data LeaderState = LeaderState
   , lsLastLogEntryData
       :: ( Index
          , Term
-         , Maybe ClientId
+         , Maybe EntryIssuer
          )
     -- ^ Index, term, and client id of the last log entry in the node's log.
     -- The only time `Maybe ClientId` will be Nothing is at the initial term.
@@ -168,7 +168,7 @@ setLastLogEntryData nodeState entries =
             { csLastLogEntryData = (entryIndex e, entryTerm e) }
         NodeLeaderState ls ->
           NodeLeaderState ls
-            { lsLastLogEntryData = (entryIndex e, entryTerm e, Just (entryClientId e)) }
+            { lsLastLogEntryData = (entryIndex e, entryTerm e, Just (entryIssuer e)) }
 
 -- | Get the last applied index and the commit index of the last log entry in
 -- the node's log

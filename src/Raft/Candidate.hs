@@ -21,6 +21,7 @@ module Raft.Candidate (
 import Protolude
 
 import qualified Data.Set as Set
+import qualified Data.Sequence as Seq
 import qualified Data.Map as Map
 
 import Raft.NodeState
@@ -29,6 +30,7 @@ import Raft.Client
 import Raft.Event
 import Raft.Action
 import Raft.Persistent
+import Raft.Log
 import Raft.Config
 import Raft.Monad
 import Raft.Types
@@ -58,7 +60,9 @@ handleRequestVote ns@(NodeCandidateState candidateState@CandidateState{..}) send
   pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
-handleRequestVoteResponse :: forall sm v. RPCHandler 'Candidate sm RequestVoteResponse v
+handleRequestVoteResponse
+  :: forall sm v. Show v
+  => RPCHandler 'Candidate sm RequestVoteResponse v
 handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
   currentTerm <- gets currentTerm
   if  | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
@@ -77,27 +81,43 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
     hasMajority nids votes =
       Set.size votes >= Set.size nids `div` 2 + 1
 
+    mkNoopEntry :: TransitionM sm v (Entry v)
+    mkNoopEntry = do
+      let (lastLogEntryIdx, _) = csLastLogEntryData
+      currTerm <- gets currentTerm
+      nid <- asks (configNodeId . nodeConfig)
+      pure Entry
+        { entryIndex = succ lastLogEntryIdx
+        , entryTerm  = currTerm
+        , entryValue = NoValue
+        , entryIssuer = LeaderIssuer (LeaderId nid)
+        }
+
     becomeLeader :: TransitionM sm v LeaderState
     becomeLeader = do
       currentTerm <- gets currentTerm
       resetHeartbeatTimeout
+      -- In order for leaders to know which entries have been replicated or not,
+      -- a "no op" log entry must be created at the start of the term. See
+      -- "Client ineraction", Section 8, of https://raft.github.io/raft.pdf.
+      noopEntry <- mkNoopEntry
+      appendLogEntries (Seq.Empty Seq.|> noopEntry)
       broadcast $ SendAppendEntriesRPC
         AppendEntriesData
           { aedTerm = currentTerm
           , aedLeaderCommit = csCommitIndex
-          , aedEntriesSpec = NoEntries FromHeartbeat
+          , aedEntriesSpec = FromNewLeader noopEntry
           }
       cNodeIds <- asks (configNodeIds . nodeConfig)
-      let (lastLogEntryIdx, lastLogEntryTerm) = csLastLogEntryData
+      let lastLogEntryIdx = entryIndex noopEntry
+          lastLogEntryTerm = entryTerm noopEntry
       pure LeaderState
        { lsCommitIndex = csCommitIndex
        , lsLastApplied = csLastApplied
        , lsNextIndex = Map.fromList $
-           (,incrIndex lastLogEntryIdx) <$> Set.toList cNodeIds
+           (,lastLogEntryIdx) <$> Set.toList cNodeIds
        , lsMatchIndex = Map.fromList $
            (,index0) <$> Set.toList cNodeIds
-       -- We use index0 as the new leader doesn't know yet what
-       -- the highest log has been seen by other nodes
        , lsLastLogEntryData = (lastLogEntryIdx, lastLogEntryTerm, Nothing)
        }
 
@@ -141,5 +161,5 @@ stepDown sender term commitIndex lastApplied lastLogEntryData = do
       , fsCommitIndex = commitIndex
       , fsLastApplied = lastApplied
       , fsLastLogEntryData = lastLogEntryData
-      , fsEntryTermAtAEIndex = Nothing
+      , fsTermAtAEPrevIndex = Nothing
       }

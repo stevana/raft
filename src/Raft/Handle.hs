@@ -73,7 +73,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               , fsCommitIndex = csCommitIndex cs
               , fsLastApplied = csLastApplied cs
               , fsLastLogEntryData = csLastLogEntryData cs
-              , fsEntryTermAtAEIndex = Nothing
+              , fsTermAtAEPrevIndex = Nothing
               }
         NodeLeaderState ls ->
           ResultState HigherTermFoundLeader $
@@ -84,7 +84,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               , fsLastLogEntryData =
                   let (lastLogEntryIdx, lastLogEntryTerm, _) = lsLastLogEntryData ls
                    in (lastLogEntryIdx, lastLogEntryTerm)
-              , fsEntryTermAtAEIndex = Nothing
+              , fsTermAtAEPrevIndex = Nothing
               }
 
 

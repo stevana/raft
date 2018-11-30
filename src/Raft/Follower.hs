@@ -47,16 +47,16 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
         -- 1. Reply false if term < currentTerm
         then pure (False, fs)
         else
-          case fsEntryTermAtAEIndex fs of
+          case fsTermAtAEPrevIndex fs of
             Nothing
               | aePrevLogIndex == index0 -> do
                   appendLogEntries aeEntries
                   pure (True, updateFollowerState fs)
               | otherwise -> pure (False, fs)
-            Just logEntryAtAePrevLogIndexTerm ->
+            Just entryAtAePrevLogIndexTerm ->
               -- 2. Reply false if log doesn't contain an entry at
               -- prevLogIndex whose term matches prevLogTerm.
-              if logEntryAtAePrevLogIndexTerm /= aePrevLogTerm
+              if entryAtAePrevLogIndexTerm /= aePrevLogTerm
                 then pure (False, fs)
                 else do
                   -- 3. If an existing entry conflicts with a new one (same index

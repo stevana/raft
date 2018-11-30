@@ -67,6 +67,7 @@ data NoEntriesSpec
 
 data EntriesSpec v
   = FromIndex Index
+  | FromNewLeader (Entry v)
   | FromClientReq (Entry v)
   | NoEntries NoEntriesSpec
   deriving (Show)

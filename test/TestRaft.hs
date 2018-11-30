@@ -212,7 +212,7 @@ testHandleActions sender =
   mapM_ (testHandleAction sender)
 
 testHandleAction :: NodeId -> Action Store StoreCmd -> Scenario ()
-testHandleAction sender action =
+testHandleAction sender action = do
   case action of
     SendRPC nId rpcAction -> do
       msg <- mkRPCfromSendRPCAction sender rpcAction
@@ -258,16 +258,8 @@ testHandleAction sender action =
                             | idx == 1 -> pure (log, index0, term0)
                             | otherwise -> pure (entries, entryIndex pe, entryTerm pe)
                           _ -> pure (log, index0, term0)
-                  FromClientReq e ->
-                    if entryIndex e /= Index 1
-                      then do
-                        eLogEntry <- runReaderT (readLogEntry (decrIndexWithDefault0 (entryIndex e))) nId
-                        case eLogEntry of
-                          Left err -> throw err
-                          Right Nothing -> pure (Seq.singleton e, index0, term0)
-                          Right (Just (prevEntry :: Entry StoreCmd)) ->
-                            pure (Seq.singleton e, entryIndex prevEntry, entryTerm prevEntry)
-                      else pure (Seq.singleton e, index0, term0)
+                  FromClientReq e -> prevEntryData nId e
+                  FromNewLeader e -> prevEntryData nId e
                   NoEntries _ -> do
                     let (lastLogIndex, lastLogTerm) = getLastLogEntryData ns
                     pure (Empty, lastLogIndex, lastLogTerm)
@@ -281,13 +273,25 @@ testHandleAction sender action =
                   , aeEntries = entries
                   , aeLeaderCommit = aedLeaderCommit aeData
                   }
-            SendAppendEntriesResponseRPC aer -> pure (toRPC aer)
+            SendAppendEntriesResponseRPC aer -> do
+              pure (toRPC aer)
             SendRequestVoteRPC rv -> pure (toRPC rv)
             SendRequestVoteResponseRPC rvr -> pure (toRPC rvr)
 
+      prevEntryData nId e
+        | entryIndex e == Index 1 = pure (Seq.singleton e, index0, term0)
+        | otherwise = do
+            eLogEntry <- runReaderT (readLogEntry (decrIndexWithDefault0 (entryIndex e))) nId
+            case eLogEntry of
+              Left err -> throw err
+              Right Nothing -> pure (Seq.singleton e, index0, term0)
+              Right (Just (prevEntry :: Entry StoreCmd)) ->
+                pure (Seq.singleton e, entryIndex prevEntry, entryTerm prevEntry)
+
 testHandleEvent :: NodeId -> Event StoreCmd -> Scenario ()
 testHandleEvent nodeId event = do
-  (nodeConfig, sm, raftState, persistentState) <- getNodeInfo nodeId
+  (nodeConfig, sm, raftState', persistentState) <- getNodeInfo nodeId
+  raftState <- loadLogEntryTermAtAePrevLogIndex raftState'
   let transitionEnv = TransitionEnv nodeConfig sm raftState
   let (newRaftState, newPersistentState, actions, logMsgs) = handleEvent raftState transitionEnv persistentState event
   updatePersistentState nodeId newPersistentState
@@ -313,9 +317,12 @@ testHandleEvent nodeId event = do
             Left err -> throw err
             Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
             Right (Just logEntry) -> do
-              let Right newStateMachine = applyCmdRSMP () stateMachine (entryValue logEntry)
-              updateStateMachine nId newStateMachine
-              applyLogEntries nId newStateMachine
+              case entryValue logEntry of
+                NoValue -> applyLogEntries nId stateMachine
+                EntryValue v -> do
+                  let Right newStateMachine = applyCmdRSMP () stateMachine v
+                  updateStateMachine nId newStateMachine
+                  applyLogEntries nId newStateMachine
 
       where
         incrLastApplied :: NodeState ns -> NodeState ns
@@ -337,6 +344,22 @@ testHandleEvent nodeId event = do
         commitIndex :: NodeState ns -> Index
         commitIndex = snd . getLastAppliedAndCommitIndex
 
+    -- In the case that a node is a follower receiving an AppendEntriesRPC
+    -- Event, read the log at the aePrevLogIndex
+    loadLogEntryTermAtAePrevLogIndex :: RaftNodeState -> Scenario RaftNodeState
+    loadLogEntryTermAtAePrevLogIndex (RaftNodeState rns) =
+      case event of
+        MessageEvent (RPCMessageEvent (RPCMessage _ (AppendEntriesRPC ae))) -> do
+          case rns of
+            NodeFollowerState fs -> do
+              eEntry <- runReaderT (readLogEntry (aePrevLogIndex ae)) nodeId
+              case eEntry of
+                Left err -> throw err
+                Right (mEntry :: Maybe (Entry StoreCmd)) ->
+                  pure $ RaftNodeState $ NodeFollowerState fs
+                    { fsTermAtAEPrevIndex = entryTerm <$> mEntry }
+            _ -> pure (RaftNodeState rns)
+        _ -> pure (RaftNodeState rns)
 
 testHeartbeat :: NodeId -> Scenario ()
 testHeartbeat sender = do
@@ -403,7 +426,6 @@ unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
 
   testInitLeader node0
-  testClientWriteRequest testSetCmd node0
 
   raftStates0 <- gets testNodeRaftStates
   sms0 <- gets testNodeSMs
@@ -412,19 +434,31 @@ unit_append_entries_client_request = runScenario $ do
   liftIO $ assertPersistedLogs logs0 [(node0, 1), (node1, 1), (node2, 1)]
   liftIO $ assertCommittedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
   liftIO $ assertAppliedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
-  liftIO $ assertSMs sms0 [(node0, Map.fromList [(testVar, testInitVal)]), (node1, mempty), (node2, mempty)]
+  liftIO $ assertSMs sms0 [(node0, mempty), (node1, mempty), (node2, mempty)]
 
-  ---------------------------- HEARTBEAT 1 ------------------------------
-  -- After leader heartbeats, followers commit and apply leader's entries
-  testHeartbeat node0
+  testClientWriteRequest testSetCmd node0
+
   raftStates1 <- gets testNodeRaftStates
   sms1 <- gets testNodeSMs
   logs1 <- gets testNodeLogs
 
-  liftIO $ assertPersistedLogs logs1 [(node0, 1), (node1, 1), (node2, 1)]
-  liftIO $ assertCommittedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  liftIO $ assertSMs sms1 [(node0, Map.fromList [(testVar, testInitVal)]), (node1, Map.fromList [(testVar, testInitVal)]), (node2, Map.fromList [(testVar, testInitVal)])]
+  liftIO $ assertPersistedLogs logs1 [(node0, 2), (node1, 2), (node2, 2)]
+  liftIO $ assertCommittedLogIndex raftStates1 [(node0, Index 2), (node1, Index 1), (node2, Index 1)]
+  liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 2), (node1, Index 1), (node2, Index 1)]
+  liftIO $ assertSMs sms1 [(node0, Map.fromList [(testVar, testInitVal)]), (node1, mempty), (node2, mempty)]
+
+  ---------------------------- HEARTBEAT 1 ------------------------------
+  -- After leader heartbeats, followers commit and apply leader's entries
+  testHeartbeat node0
+
+  raftStates2 <- gets testNodeRaftStates
+  sms2 <- gets testNodeSMs
+  logs2 <- gets testNodeLogs
+
+  liftIO $ assertPersistedLogs logs2 [(node0, 2), (node1, 2), (node2, 2)]
+  liftIO $ assertCommittedLogIndex raftStates2 [(node0, Index 2), (node1, Index 2), (node2, Index 2)]
+  liftIO $ assertAppliedLogIndex raftStates2 [(node0, Index 2), (node1, Index 2), (node2, Index 2)]
+  liftIO $ assertSMs sms2 [(node0, Map.fromList [(testVar, testInitVal)]), (node1, Map.fromList [(testVar, testInitVal)]), (node2, Map.fromList [(testVar, testInitVal)])]
 
 
 
@@ -484,7 +518,7 @@ unit_client_write_response = runScenario $ do
   cResps <- gets testClientResps
   let ClientWriteResponse (ClientWriteResp idx) = lookupLastClientResp client0 cResps
   liftIO $ HUnit.assertBool "A client should receive an aknowledgement of a writing request"
-    (idx == Index 1)
+    (idx == Index 2)
 
 unit_new_leader :: IO ()
 unit_new_leader = runScenario $ do

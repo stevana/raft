@@ -28,7 +28,7 @@ import Raft.Action
 import Raft.Client
 import Raft.Event
 import Raft.Persistent
-import Raft.Log (Entry(..))
+import Raft.Log (Entry(..), EntryIssuer(..), EntryValue(..))
 import Raft.Monad
 import Raft.Types
 
@@ -61,10 +61,11 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       -- replicated an entry at a given term.
       newestLeaderState <- incrCommitIndex newLeaderState
       when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
-        let (_,_, mClientId) = lsLastLogEntryData newestLeaderState
-        case mClientId of
-          Nothing -> panic "Last log entry does not exist, but it should."
-          Just clientId -> tellActions [RespondToClient clientId (ClientWriteResponse (ClientWriteResp (lsCommitIndex newestLeaderState)))]
+        let (entryIdx, _, entryIssuer) = lsLastLogEntryData newestLeaderState
+        case entryIssuer of
+          Nothing -> panic "No last long entry issuer"
+          Just (LeaderIssuer _) -> pure ()
+          Just (ClientIssuer cid) -> tellActions [RespondToClient cid (ClientWriteResponse (ClientWriteResp entryIdx))]
       pure (leaderResultState Noop newestLeaderState)
 
 -- | Leaders should not respond to 'RequestVote' messages.
@@ -96,20 +97,20 @@ handleClientRequest (NodeLeaderState ls) (ClientRequest clientId cr) = do
     case cr of
       ClientReadReq -> respondClientRead clientId
       ClientWriteReq v -> do
-        let (lastLogEntryIdx,_,_) = lsLastLogEntryData ls
-        newLogEntry <- mkNewLogEntry v (lastLogEntryIdx + 1)
+        newLogEntry <- mkNewLogEntry v
         appendLogEntries (Empty Seq.|> newLogEntry)
         aeData <- mkAppendEntriesData ls (FromClientReq newLogEntry)
         broadcast (SendAppendEntriesRPC aeData)
     pure (leaderResultState Noop ls)
   where
-    mkNewLogEntry v idx = do
+    mkNewLogEntry v = do
       currentTerm <- currentTerm <$> get
+      let (lastLogEntryIdx,_,_) = lsLastLogEntryData ls
       pure $ Entry
-        { entryIndex = idx
+        { entryIndex = succ lastLogEntryIdx
         , entryTerm = currentTerm
-        , entryValue = v
-        , entryClientId = clientId
+        , entryValue = EntryValue v
+        , entryIssuer = ClientIssuer clientId
         }
 
 --------------------------------------------------------------------------------
@@ -124,7 +125,7 @@ incrCommitIndex leaderState@LeaderState{..} = do
     if majorityGreaterThanN && (lastLogEntryTerm == currentTerm)
       then do
         logDebug $ "Incrementing commit index to: " <> show n
-        pure leaderState { lsCommitIndex = n }
+        incrCommitIndex leaderState { lsCommitIndex = n }
       else do
         logDebug "Not incrementing commit index."
         pure leaderState

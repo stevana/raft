@@ -19,15 +19,25 @@ import Data.Sequence (Seq(..), (|>))
 
 import Raft.Types
 
+data EntryIssuer
+  = ClientIssuer ClientId
+  | LeaderIssuer LeaderId
+  deriving (Show, Generic, Serialize)
+
+data EntryValue v
+  = EntryValue v
+  | NoValue -- ^ Used as a first committed entry of a new term
+  deriving (Show, Generic, Serialize)
+
 -- | Representation of an entry in the replicated log
 data Entry v = Entry
   { entryIndex :: Index
     -- ^ Index of entry in the log
   , entryTerm :: Term
     -- ^ Term when entry was received by leader
-  , entryValue :: v
+  , entryValue :: EntryValue v
     -- ^ Command to update state machine
-  , entryClientId :: ClientId
+  , entryIssuer :: EntryIssuer
     -- ^ Id of the client that issued the command
   } deriving (Show, Generic, Serialize)
 

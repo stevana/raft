@@ -246,7 +246,7 @@ testHandleAction sender action = do
         RPCMessage (configNodeId nodeConfig) <$>
           case sendRPCAction of
             SendAppendEntriesRPC aeData -> do
-              (entries, prevLogIndex, prevLogTerm) <-
+              (entries, prevLogIndex, prevLogTerm, aeReadReq) <-
                 case aedEntriesSpec aeData of
                   FromIndex idx -> do
                     eLogEntries <- runReaderT (readLogEntriesFrom (decrIndexWithDefault0 idx)) nId
@@ -255,14 +255,18 @@ testHandleAction sender action = do
                       Right log ->
                         case log of
                           pe :<| entries@(e :<| _)
-                            | idx == 1 -> pure (log, index0, term0)
-                            | otherwise -> pure (entries, entryIndex pe, entryTerm pe)
-                          _ -> pure (log, index0, term0)
-                  FromClientReq e -> prevEntryData nId e
+                            | idx == 1 -> pure (log, index0, term0, Nothing)
+                            | otherwise -> pure (entries, entryIndex pe, entryTerm pe, Nothing)
+                          _ -> pure (log, index0, term0, Nothing)
+                  FromClientWriteReq e -> prevEntryData nId e
                   FromNewLeader e -> prevEntryData nId e
-                  NoEntries _ -> do
-                    let (lastLogIndex, lastLogTerm) = getLastLogEntryData ns
-                    pure (Empty, lastLogIndex, lastLogTerm)
+                  NoEntries spec -> do
+                    let readReq' =
+                          case spec of
+                            FromClientReadReq n -> Just n
+                            _ -> Nothing
+                        (lastLogIndex, lastLogTerm) = getLastLogEntryData ns
+                    pure (Empty, lastLogIndex, lastLogTerm, readReq')
               let leaderId = LeaderId (configNodeId nodeConfig)
               pure . toRPC $
                 AppendEntries
@@ -272,13 +276,18 @@ testHandleAction sender action = do
                   , aePrevLogTerm = prevLogTerm
                   , aeEntries = entries
                   , aeLeaderCommit = aedLeaderCommit aeData
+                  , aeReadRequest = aeReadReq
                   }
             SendAppendEntriesResponseRPC aer -> do
               pure (toRPC aer)
             SendRequestVoteRPC rv -> pure (toRPC rv)
             SendRequestVoteResponseRPC rvr -> pure (toRPC rvr)
 
-      prevEntryData nId e
+      prevEntryData nId e = do
+        (x,y,z) <- prevEntryData' nId e
+        pure (x,y,z,Nothing)
+
+      prevEntryData' nId e
         | entryIndex e == Index 1 = pure (Seq.singleton e, index0, term0)
         | otherwise = do
             eLogEntry <- runReaderT (readLogEntry (decrIndexWithDefault0 (entryIndex e))) nId

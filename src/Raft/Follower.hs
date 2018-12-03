@@ -74,6 +74,7 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
         AppendEntriesResponse
           { aerTerm = currentTerm
           , aerSuccess = success
+          , aerReadRequest = aeReadRequest
           }
     resetElectionTimeout
     pure (followerResultState Noop newFollowerState)

@@ -6,6 +6,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Raft.Leader (
     handleAppendEntries
@@ -20,8 +21,10 @@ import Protolude
 
 import qualified Data.Map as Map
 import Data.Sequence (Seq(Empty))
+import qualified Data.Set as Set
 import qualified Data.Sequence as Seq
 
+import Raft.Config (configNodeIds)
 import Raft.NodeState
 import Raft.RPC
 import Raft.Action
@@ -41,7 +44,9 @@ handleAppendEntries :: RPCHandler 'Leader sm (AppendEntries v) v
 handleAppendEntries (NodeLeaderState ls)_ _  =
   pure (leaderResultState Noop ls)
 
-handleAppendEntriesResponse :: Show v => RPCHandler 'Leader sm AppendEntriesResponse v
+handleAppendEntriesResponse
+  :: forall sm v. Show v
+  => RPCHandler 'Leader sm AppendEntriesResponse v
 handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
   -- If AppendEntries fails (aerSuccess == False) because of log inconsistency,
   -- decrement nextIndex and retry
@@ -66,7 +71,32 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
           Nothing -> panic "No last long entry issuer"
           Just (LeaderIssuer _) -> pure ()
           Just (ClientIssuer cid) -> tellActions [RespondToClient cid (ClientWriteResponse (ClientWriteResp entryIdx))]
-      pure (leaderResultState Noop newestLeaderState)
+
+      case aerReadRequest appendEntriesResp of
+        Nothing -> pure (leaderResultState Noop newestLeaderState)
+        Just n -> handleReadReq n newestLeaderState
+  where
+    handleReadReq :: Int -> LeaderState -> TransitionM sm v (ResultState 'Leader)
+    handleReadReq n leaderState = do
+      networkSize <- Set.size <$> asks (configNodeIds . nodeConfig)
+      let initReadReqs = lsReadRequest leaderState
+          (mclientId, newReadReqs) =
+            case Map.lookup n initReadReqs of
+              Nothing -> panic "This should not happen"
+              Just (cid,m)
+                | isMajority (succ m) networkSize -> (Just cid, Map.delete n initReadReqs)
+                | otherwise -> (Nothing, Map.adjust (second succ) n initReadReqs)
+      case mclientId of
+        Nothing ->
+          pure $ leaderResultState Noop leaderState
+            { lsReadRequest = newReadReqs
+            }
+        Just cid -> do
+          respondClientRead cid
+          pure $ leaderResultState Noop leaderState
+            { lsReadReqsHandled = succ (lsReadReqsHandled leaderState)
+            , lsReadRequest = newReadReqs
+            }
 
 -- | Leaders should not respond to 'RequestVote' messages.
 handleRequestVote :: RPCHandler 'Leader sm RequestVote v
@@ -93,24 +123,30 @@ handleTimeout (NodeLeaderState ls) timeout =
 -- machine on a client read, and appending an entry to the log on a valid client
 -- write.
 handleClientRequest :: Show v => ClientReqHandler 'Leader sm v
-handleClientRequest (NodeLeaderState ls) (ClientRequest clientId cr) = do
+handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) = do
     case cr of
-      ClientReadReq -> respondClientRead clientId
+      ClientReadReq -> do
+        heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
+        broadcast (SendAppendEntriesRPC heartbeat)
+        let newLeaderState =
+              ls { lsReadRequest = Map.insert lsReadReqsHandled (cid, 0) lsReadRequest
+                 }
+        pure (leaderResultState Noop newLeaderState)
       ClientWriteReq v -> do
         newLogEntry <- mkNewLogEntry v
         appendLogEntries (Empty Seq.|> newLogEntry)
-        aeData <- mkAppendEntriesData ls (FromClientReq newLogEntry)
+        aeData <- mkAppendEntriesData ls (FromClientWriteReq newLogEntry)
         broadcast (SendAppendEntriesRPC aeData)
-    pure (leaderResultState Noop ls)
+        pure (leaderResultState Noop ls)
   where
     mkNewLogEntry v = do
       currentTerm <- currentTerm <$> get
-      let (lastLogEntryIdx,_,_) = lsLastLogEntryData ls
+      let (lastLogEntryIdx,_,_) = lsLastLogEntryData
       pure $ Entry
         { entryIndex = succ lastLogEntryIdx
         , entryTerm = currentTerm
         , entryValue = EntryValue v
-        , entryIssuer = ClientIssuer clientId
+        , entryIssuer = ClientIssuer cid
         }
 
 --------------------------------------------------------------------------------
@@ -136,8 +172,11 @@ incrCommitIndex leaderState@LeaderState{..} = do
     -- calculating the number of nodes that need a match index > N, we only need
     -- to divide the size of the map by 2 instead of also adding one.
     majorityGreaterThanN =
-      (>=) (Map.size (Map.filter (>= n) lsMatchIndex))
-           ((Map.size lsMatchIndex) `div` 2)
+      isMajority (Map.size (Map.filter (>= n) lsMatchIndex) + 1)
+                 (Map.size lsMatchIndex)
+
+isMajority :: Int -> Int -> Bool
+isMajority n m = n >= m `div` 2 + 1
 
 -- | Construct an AppendEntriesRPC given log entries and a leader state.
 mkAppendEntriesData

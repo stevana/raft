@@ -119,6 +119,8 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
        , lsMatchIndex = Map.fromList $
            (,index0) <$> Set.toList cNodeIds
        , lsLastLogEntryData = (lastLogEntryIdx, lastLogEntryTerm, Nothing)
+       , lsReadReqsHandled = 0
+       , lsReadRequest = mempty
        }
 
 handleTimeout :: TimeoutHandler 'Candidate sm v

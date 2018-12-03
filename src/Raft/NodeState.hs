@@ -131,6 +131,8 @@ data CandidateState = CandidateState
     -- ^ Index and term of the last log entry in the node's log
   } deriving (Show)
 
+type ClientReadReqs = Map Int (ClientId, Int)
+
 data LeaderState = LeaderState
   { lsCommitIndex :: Index
     -- ^ Index of highest log entry known to be committed
@@ -147,6 +149,11 @@ data LeaderState = LeaderState
          )
     -- ^ Index, term, and client id of the last log entry in the node's log.
     -- The only time `Maybe ClientId` will be Nothing is at the initial term.
+  , lsReadReqsHandled :: Int
+    -- ^ Number of read requests handled this term
+  , lsReadRequest :: ClientReadReqs
+    -- ^ The number of successful responses received regarding a specific read
+    -- request heartbeat.
   } deriving (Show)
 
 --------------------------------------------------------------------------------

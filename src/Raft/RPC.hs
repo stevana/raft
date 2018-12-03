@@ -63,12 +63,13 @@ rpcTerm = \case
 data NoEntriesSpec
   = FromInconsistency
   | FromHeartbeat
+  | FromClientReadReq Int
   deriving (Show)
 
 data EntriesSpec v
   = FromIndex Index
   | FromNewLeader (Entry v)
-  | FromClientReq (Entry v)
+  | FromClientWriteReq (Entry v)
   | NoEntries NoEntriesSpec
   deriving (Show)
 
@@ -94,6 +95,8 @@ data AppendEntries v = AppendEntries
     -- ^ Log entries to store (empty for heartbeat)
   , aeLeaderCommit :: Index
     -- ^ Leader's commit index
+  , aeReadRequest :: Maybe Int
+    -- ^ which read request the message corresponds to
   } deriving (Show, Generic, Serialize)
 
 -- | Representation of the response from a follower to an AppendEntries message
@@ -102,6 +105,8 @@ data AppendEntriesResponse = AppendEntriesResponse
     -- ^ current term for leader to update itself
   , aerSuccess :: Bool
     -- ^ true if follower contained entry matching aePrevLogIndex and aePrevLogTerm
+  , aerReadRequest :: Maybe Int
+    -- ^ which read request the response corresponds to
   } deriving (Show, Generic, Serialize)
 
 -- | Representation of the message sent by candidates to their peers to request

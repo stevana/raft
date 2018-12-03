@@ -20,6 +20,7 @@ import qualified Data.Maybe as Maybe
 import qualified Data.Serialize as S
 import Numeric.Natural
 
+import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Conc.Class
 import Control.Concurrent.Classy.STM.TChan
@@ -86,7 +87,7 @@ type TestNodeStates = Map NodeId TestNodeState
 
 newtype RaftTestM a = RaftTestM {
     unRaftTestM :: ReaderT TestNodeEnv (StateT TestNodeStates ConcIO) a
-  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestNodeStates)
+  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestNodeStates, MonadFail)
 
 deriving instance MonadThrow RaftTestM
 deriving instance MonadCatch RaftTestM

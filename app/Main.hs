@@ -21,6 +21,7 @@ import Protolude hiding
   )
 
 import Control.Concurrent.Classy hiding (catch)
+import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
@@ -90,7 +91,7 @@ data NodeEnv sm = NodeEnv
   }
 
 newtype RaftExampleM sm v a = RaftExampleM { unRaftExampleM :: ReaderT (NodeEnv sm) (RaftSocketT v (RaftFileStoreT IO)) a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader (NodeEnv sm), Alternative, MonadPlus)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadReader (NodeEnv sm), Alternative, MonadPlus)
 
 deriving instance MonadThrow (RaftExampleM sm v)
 deriving instance MonadCatch (RaftExampleM sm v)

@@ -96,7 +96,11 @@ instance (MonadIO m, MonadConc m, S.Serialize v) => RaftDeleteLog (RaftFileStore
     eLogEntries <- readLogEntries
     case eLogEntries of
       Left err -> panic ("deleteLogEntriesFrom: " <> err)
-      Right (entries :: Entries v) -> pure $ const (Right DeleteSuccess) $ Seq.dropWhileR ((>= idx) . entryIndex) entries
+      Right (entries :: Entries v) -> do
+        let newLogEntries = Seq.dropWhileR ((>= idx) . entryIndex) entries
+        entriesPath <- asks nfsLogEntries
+        liftIO $ BS.writeFile entriesPath (S.encode newLogEntries)
+        pure (Right DeleteSuccess)
 
 readLogEntries :: (MonadIO m, S.Serialize v) => RaftFileStoreT m (Either Text (Entries v))
 readLogEntries = liftIO . fmap (first toS . S.decode) . BS.readFile . toS =<< asks nfsLogEntries

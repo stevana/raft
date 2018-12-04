@@ -182,7 +182,7 @@ logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogDest
 -- | Run timers, RPC and client request handlers and start event loop.
 -- It should run forever
 runRaftNode
-  :: ( Show v, Show sm, Show (Action sm v)
+  :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
      , MonadIO m, MonadConc m, MonadFail m
      , RSM sm v m
      , Show (RSMPError sm v)
@@ -223,7 +223,7 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
 
 handleEventLoop
   :: forall sm v m.
-     ( Show v, Show sm, Show (Action sm v)
+     ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
      , MonadIO m, MonadConc m, MonadFail m
      , RSM sm v m
      , Show (RSMPError sm v)
@@ -250,8 +250,6 @@ handleEventLoop initRSM = do
       raftNodeState <- get
       logDebug $ "[Event]: " <> show event
       logDebug $ "[NodeState]: " <> show raftNodeState
-      Right log :: Either (RaftReadLogError m) (Entries v) <- lift $ readLogEntriesFrom index0
-      logDebug $ "[Log]: " <> show log
       logDebug $ "[State Machine]: " <> show stateMachine
       logDebug $ "[Persistent State]: " <> show persistentState
       -- Perform core state machine transition, handling the current event
@@ -293,7 +291,7 @@ handleEventLoop initRSM = do
         _ -> pure ()
 
 handleActions
-  :: ( Show v, Show sm, Show (Action sm v)
+  :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
      , MonadIO m, MonadConc m
      , RSM sm v m
      , RaftSendRPC m v
@@ -308,7 +306,7 @@ handleActions = mapM_ . handleAction
 
 handleAction
   :: forall sm v m.
-     ( Show v, Show sm, Show (Action sm v)
+     ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
      , MonadIO m, MonadConc m
      , RSM sm v m
      , RaftSendRPC m v
@@ -338,10 +336,13 @@ handleAction nodeConfig action = do
         ElectionTimeout -> lift . resetElectionTimer =<< ask
         HeartbeatTimeout -> lift . resetHeartbeatTimer =<< ask
     AppendLogEntries entries -> do
-      lift (updateLog entries)
-      -- Update the last log entry data
-      modify $ \(RaftNodeState ns) ->
-        RaftNodeState (setLastLogEntryData ns entries)
+      eRes <- lift (updateLog entries)
+      case eRes of
+        Left err -> panic (show err)
+        Right _ -> do
+          -- Update the last log entry data
+          modify $ \(RaftNodeState ns) ->
+            RaftNodeState (setLastLogEntryData ns entries)
 
   where
     mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
@@ -425,7 +426,7 @@ applyLogEntries stateMachine = do
         eLogEntry <- lift $ readLogEntry newLastAppliedIndex
         case eLogEntry of
           Left err -> throw err
-          Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
+          Right Nothing -> panic $ "No log entry at 'newLastAppliedIndex := " <> show newLastAppliedIndex <> "'"
           Right (Just logEntry) -> do
             -- The command should be verified by the leader, thus all node
             -- attempting to apply the committed log entry should not fail when

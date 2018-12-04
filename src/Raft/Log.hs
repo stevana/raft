@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft.Log where
@@ -43,8 +44,23 @@ data Entry v = Entry
 
 type Entries v = Seq (Entry v)
 
+data InvalidLog
+  = InvalidIndex { expected :: Index, actual :: Index }
+  deriving (Show)
+
+-- | For debugging purposes
+validateLog :: Entries v -> Either InvalidLog ()
+validateLog es =
+    case traverse (uncurry validateIndex) (zip (toList es) [Index 1..]) of
+      Left e -> Left e
+      Right _ -> Right ()
+  where
+    validateIndex e idx
+      | entryIndex e == idx = Right ()
+      | otherwise = Left (InvalidIndex idx (entryIndex e))
+
 -- | Provides an interface for nodes to write log entries to storage.
-class Monad m => RaftWriteLog m v where
+class (Show (RaftWriteLogError m), Monad m) => RaftWriteLog m v where
   type RaftWriteLogError m
   -- | Write the given log entries to storage
   writeLogEntries
@@ -54,7 +70,7 @@ class Monad m => RaftWriteLog m v where
 data DeleteSuccess v = DeleteSuccess
 
 -- | Provides an interface for nodes to delete log entries from storage.
-class Monad m => RaftDeleteLog m v where
+class (Show (RaftDeleteLogError m), Monad m) => RaftDeleteLog m v where
   type RaftDeleteLogError m
   -- | Delete log entries from a given index; e.g. 'deleteLogEntriesFrom 7'
   -- should delete every log entry with an index >= 7.
@@ -63,7 +79,7 @@ class Monad m => RaftDeleteLog m v where
     => Index -> m (Either (RaftDeleteLogError m) (DeleteSuccess v))
 
 -- | Provides an interface for nodes to read log entries from storage.
-class Monad m => RaftReadLog m v where
+class (Show (RaftReadLogError m), Monad m) => RaftReadLog m v where
   type RaftReadLogError m
   -- | Read the log at a given index
   readLogEntry
@@ -106,10 +122,12 @@ type RaftLogExceptions m = (Exception (RaftReadLogError m), Exception (RaftWrite
 
 -- | Representation of possible errors that come from reading, writing or
 -- deleting logs from the persistent storage
-data RaftLogError m
-  = RaftLogReadError (RaftReadLogError m)
-  | RaftLogWriteError (RaftWriteLogError m)
-  | RaftLogDeleteError (RaftDeleteLogError m)
+data RaftLogError m where
+  RaftLogReadError :: Show (RaftReadLogError m) => RaftReadLogError m -> RaftLogError m
+  RaftLogWriteError :: Show (RaftWriteLogError m) => RaftWriteLogError m -> RaftLogError m
+  RaftLogDeleteError :: Show (RaftDeleteLogError m) => RaftDeleteLogError m -> RaftLogError m
+
+deriving instance Show (RaftLogError m)
 
 updateLog
   :: forall m v.

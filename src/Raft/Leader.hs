@@ -66,7 +66,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
         let (entryIdx, _, entryIssuer) = lsLastLogEntryData newestLeaderState
         case entryIssuer of
-          Nothing -> panic "No last long entry issuer"
+          Nothing -> panic "No last log entry issuer"
           Just (LeaderIssuer _) -> pure ()
           Just (ClientIssuer cid) -> tellActions [RespondToClient cid (ClientWriteResponse (ClientWriteResp entryIdx))]
 

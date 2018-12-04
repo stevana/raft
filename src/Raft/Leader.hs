@@ -80,7 +80,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       let initReadReqs = lsReadRequest leaderState
           (mclientId, newReadReqs) =
             case Map.lookup n initReadReqs of
-              Nothing -> panic "This should not happen"
+              Nothing -> (Nothing, initReadReqs)
               Just (cid,m)
                 | isMajority (succ m) networkSize -> (Just cid, Map.delete n initReadReqs)
                 | otherwise -> (Nothing, Map.adjust (second succ) n initReadReqs)
@@ -127,7 +127,7 @@ handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) 
         heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
         broadcast (SendAppendEntriesRPC heartbeat)
         let newLeaderState =
-              ls { lsReadRequest = Map.insert lsReadReqsHandled (cid, 0) lsReadRequest
+              ls { lsReadRequest = Map.insert lsReadReqsHandled (cid, 1) lsReadRequest
                  }
         pure (leaderResultState Noop newLeaderState)
       ClientWriteReq v -> do

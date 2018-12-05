@@ -283,35 +283,31 @@ test0 :: Handle -> Property
 test0 = runMany cmds
   where
     cmds = Commands
-      { unCommands =
-          [ Command (SpawnNode 3001) (Set.fromList [ Var 0 ])
-          , Command (SpawnNode 3002) (Set.fromList [ Var 1 ])
-          , Command (SpawnNode 3000) (Set.fromList [ Var 2 ])
-          , Command (Set 14) Set.empty
-          , Command Read Set.empty
-          , Command Incr Set.empty
-          , Command
-              (BreakConnection ( 3002 , Reference (Symbolic (Var 1)) ))
-              Set.empty
-          , Command Incr Set.empty
-          , Command Incr Set.empty
-          , Command Incr Set.empty
-          , Command
-              (FixConnection ( 3002 , Reference (Symbolic (Var 1)) )) Set.empty
-          , Command
-              (BreakConnection ( 3001 , Reference (Symbolic (Var 0)) ))
-              Set.empty
-          , Command (Set 3) Set.empty
-          , Command Incr Set.empty
-          , Command Read Set.empty
-          , Command Incr Set.empty
-          , Command
-              (FixConnection ( 3001 , Reference (Symbolic (Var 0)) )) Set.empty
-          , Command Read Set.empty
-          , Command Incr Set.empty
-          , Command Incr Set.empty
-          ]
-      }
+      [ Command (SpawnNode 3000) (Set.fromList [ Var 0 ])
+      , Command (SpawnNode 3002) (Set.fromList [ Var 1 ])
+      , Command (SpawnNode 3001) (Set.fromList [ Var 2 ])
+      , Command (Set 4) Set.empty
+      , Command Read Set.empty
+      , Command
+          (KillNode ( 3000 , Reference (Symbolic  (Var 0)) )) Set.empty
+      , Command (SpawnNode 3000) (Set.fromList [ Var 3 ])
+      , Command
+          (BreakConnection ( 3001 , Reference (Symbolic  (Var 2)) ))
+          Set.empty
+      , Command Read Set.empty
+      , Command Incr Set.empty
+      , Command Read Set.empty
+      , Command Incr Set.empty
+      , Command
+          (FixConnection ( 3001 , Reference (Symbolic  (Var 2)) )) Set.empty
+      , Command Read Set.empty
+      , Command Read Set.empty
+      , Command Incr Set.empty
+      , Command
+          (KillNode ( 3002 , Reference (Symbolic  (Var 1)) )) Set.empty
+      , Command (SpawnNode 3002) (Set.fromList [ Var 4 ])
+      , Command Read Set.empty
+      ]
 
 unit_test0 :: IO ()
 unit_test0 = bracket setup hClose (verboseCheck . test0)

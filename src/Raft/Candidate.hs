@@ -20,6 +20,7 @@ module Raft.Candidate (
 
 import Protolude
 
+import qualified Data.Serialize as S
 import qualified Data.Set as Set
 import qualified Data.Sequence as Seq
 import qualified Data.Map as Map
@@ -43,7 +44,7 @@ handleAppendEntries :: RPCHandler 'Candidate sm (AppendEntries v) v
 handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sender AppendEntries {..} = do
   currentTerm <- gets currentTerm
   if currentTerm <= aeTerm
-    then stepDown sender aeTerm csCommitIndex csLastApplied csLastLogEntryData
+    then stepDown sender aeTerm csCommitIndex csLastApplied csLastLogEntry
     else pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
@@ -61,7 +62,7 @@ handleRequestVote ns@(NodeCandidateState candidateState@CandidateState{..}) send
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse
-  :: forall sm v. Show v
+  :: forall sm v. (Show v, S.Serialize v)
   => RPCHandler 'Candidate sm RequestVoteResponse v
 handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
   currentTerm <- gets currentTerm
@@ -83,7 +84,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
 
     mkNoopEntry :: TransitionM sm v (Entry v)
     mkNoopEntry = do
-      let (lastLogEntryIdx, _) = csLastLogEntryData
+      let lastLogEntryIdx = lastLogEntryIndex csLastLogEntry
       currTerm <- gets currentTerm
       nid <- asks (configNodeId . nodeConfig)
       pure Entry
@@ -91,9 +92,10 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
         , entryTerm  = currTerm
         , entryValue = NoValue
         , entryIssuer = LeaderIssuer (LeaderId nid)
+        , entryPrevHash = hashLastLogEntry csLastLogEntry
         }
 
-    becomeLeader :: TransitionM sm v LeaderState
+    becomeLeader :: TransitionM sm v (LeaderState v)
     becomeLeader = do
       currentTerm <- gets currentTerm
       resetHeartbeatTimeout
@@ -110,7 +112,6 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
           }
       cNodeIds <- asks (configNodeIds . nodeConfig)
       let lastLogEntryIdx = entryIndex noopEntry
-          lastLogEntryTerm = entryTerm noopEntry
       pure LeaderState
        { lsCommitIndex = csCommitIndex
        , lsLastApplied = csLastApplied
@@ -118,7 +119,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
            (,lastLogEntryIdx) <$> Set.toList cNodeIds
        , lsMatchIndex = Map.fromList $
            (,index0) <$> Set.toList cNodeIds
-       , lsLastLogEntryData = (lastLogEntryIdx, lastLogEntryTerm, Nothing)
+       , lsLastLogEntry = csLastLogEntry
        , lsReadReqsHandled = 0
        , lsReadRequest = mempty
        }
@@ -129,7 +130,7 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
     HeartbeatTimeout -> pure $ candidateResultState Noop candidateState
     ElectionTimeout ->
       candidateResultState RestartElection <$>
-        startElection csCommitIndex csLastApplied csLastLogEntryData
+        startElection csCommitIndex csLastApplied csLastLogEntry
 
 -- | When candidates handle a client request, they respond with NoLeader, as the
 -- very reason they are candidate is because there is no leader. This is done
@@ -143,13 +144,14 @@ handleClientRequest (NodeCandidateState candidateState) (ClientRequest clientId 
 --------------------------------------------------------------------------------
 
 stepDown
-  :: NodeId
+  :: Show v
+  => NodeId
   -> Term
   -> Index
   -> Index
-  -> (Index, Term)
-  -> TransitionM a sm (ResultState 'Candidate)
-stepDown sender term commitIndex lastApplied lastLogEntryData = do
+  -> LastLogEntry v
+  -> TransitionM sm v (ResultState 'Candidate v)
+stepDown sender term commitIndex lastApplied lastLogEntry = do
   send sender $
     SendRequestVoteResponseRPC $
       RequestVoteResponse
@@ -162,6 +164,6 @@ stepDown sender term commitIndex lastApplied lastLogEntryData = do
       { fsCurrentLeader = CurrentLeader (LeaderId sender)
       , fsCommitIndex = commitIndex
       , fsLastApplied = lastApplied
-      , fsLastLogEntryData = lastLogEntryData
+      , fsLastLogEntry = lastLogEntry
       , fsTermAtAEPrevIndex = Nothing
       }

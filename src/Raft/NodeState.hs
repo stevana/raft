@@ -39,37 +39,46 @@ data Transition (init :: Mode) (res :: Mode) where
 deriving instance Show (Transition init res)
 
 -- | Existential type hiding the result type of a transition
-data ResultState init where
-  ResultState :: Transition init res -> NodeState res -> ResultState init
+data ResultState init v where
+  ResultState
+    :: Show v
+    => Transition init res
+    -> NodeState res v
+    -> ResultState init v
 
-deriving instance Show (ResultState init)
+deriving instance Show v => Show (ResultState init v)
 
 followerResultState
-  :: Transition init 'Follower
-  -> FollowerState
-  -> ResultState init
+  :: Show v
+  => Transition init 'Follower
+  -> FollowerState v
+  -> ResultState init v
 followerResultState transition fstate =
   ResultState transition (NodeFollowerState fstate)
 
 candidateResultState
-  :: Transition init 'Candidate
-  -> CandidateState
-  -> ResultState init
+  :: Show v
+  => Transition init 'Candidate
+  -> CandidateState v
+  -> ResultState init v
 candidateResultState transition cstate =
   ResultState transition (NodeCandidateState cstate)
 
 leaderResultState
-  :: Transition init 'Leader
-  -> LeaderState
-  -> ResultState init
+  :: Show v
+  => Transition init 'Leader
+  -> LeaderState v
+  -> ResultState init v
 leaderResultState transition lstate =
   ResultState transition (NodeLeaderState lstate)
 
 -- | Existential type hiding the internal node state
-data RaftNodeState where
-  RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState
+data RaftNodeState v where
+  RaftNodeState :: { unRaftNodeState :: NodeState s v } -> RaftNodeState v
 
-nodeMode :: RaftNodeState -> Mode
+deriving instance Show v => Show (RaftNodeState v)
+
+nodeMode :: RaftNodeState v -> Mode
 nodeMode (RaftNodeState rns) =
   case rns of
     NodeFollowerState _ -> Follower
@@ -77,26 +86,24 @@ nodeMode (RaftNodeState rns) =
     NodeLeaderState _ -> Leader
 
 -- | A node in Raft begins as a follower
-initRaftNodeState :: RaftNodeState
+initRaftNodeState :: RaftNodeState v
 initRaftNodeState =
   RaftNodeState $
     NodeFollowerState FollowerState
       { fsCommitIndex = index0
       , fsLastApplied = index0
       , fsCurrentLeader = NoLeader
-      , fsLastLogEntryData = (index0, term0)
+      , fsLastLogEntry = NoLogEntries
       , fsTermAtAEPrevIndex = Nothing
       }
 
-deriving instance Show RaftNodeState
-
 -- | The volatile state of a Raft Node
-data NodeState (a :: Mode) where
-  NodeFollowerState :: FollowerState -> NodeState 'Follower
-  NodeCandidateState :: CandidateState -> NodeState 'Candidate
-  NodeLeaderState :: LeaderState -> NodeState 'Leader
+data NodeState (a :: Mode) v where
+  NodeFollowerState :: FollowerState v -> NodeState 'Follower v
+  NodeCandidateState :: CandidateState v -> NodeState 'Candidate v
+  NodeLeaderState :: LeaderState v -> NodeState 'Leader v
 
-deriving instance Show (NodeState v)
+deriving instance Show v => Show (NodeState s v)
 
 -- | Representation of the current leader in the cluster. The system is
 -- considered to be unavailable if there is no leader
@@ -107,33 +114,61 @@ data CurrentLeader
 
 instance S.Serialize CurrentLeader
 
-data FollowerState = FollowerState
+data LastLogEntry v
+  = LastLogEntry (Entry v)
+  | NoLogEntries
+  deriving (Show)
+
+hashLastLogEntry :: S.Serialize v => LastLogEntry v -> EntryHash
+hashLastLogEntry = \case
+  LastLogEntry e -> hashEntry e
+  NoLogEntries -> genesisHash
+
+lastLogEntryIndex :: LastLogEntry v -> Index
+lastLogEntryIndex = \case
+  LastLogEntry e -> entryIndex e
+  NoLogEntries -> index0
+
+lastLogEntryTerm :: LastLogEntry v -> Term
+lastLogEntryTerm = \case
+  LastLogEntry e -> entryTerm e
+  NoLogEntries -> term0
+
+lastLogEntryIndexAndTerm :: LastLogEntry v -> (Index, Term)
+lastLogEntryIndexAndTerm lle = (lastLogEntryIndex lle, lastLogEntryTerm lle)
+
+lastLogEntryIssuer :: LastLogEntry v -> Maybe EntryIssuer
+lastLogEntryIssuer = \case
+  LastLogEntry e -> Just (entryIssuer e)
+  NoLogEntries -> Nothing
+
+data FollowerState v = FollowerState
   { fsCurrentLeader :: CurrentLeader
     -- ^ Id of the current leader
   , fsCommitIndex :: Index
     -- ^ Index of highest log entry known to be committed
   , fsLastApplied :: Index
     -- ^ Index of highest log entry applied to state machine
-  , fsLastLogEntryData :: (Index, Term)
+  , fsLastLogEntry :: LastLogEntry v
     -- ^ Index and term of the last log entry in the node's log
   , fsTermAtAEPrevIndex :: Maybe Term
     -- ^ The term of the log entry specified in and AppendEntriesRPC
   } deriving (Show)
 
-data CandidateState = CandidateState
+data CandidateState v = CandidateState
   { csCommitIndex :: Index
     -- ^ Index of highest log entry known to be committed
   , csLastApplied :: Index
     -- ^ Index of highest log entry applied to state machine
   , csVotes :: NodeIds
     -- ^ Votes from other nodes in the raft network
-  , csLastLogEntryData :: (Index, Term)
+  , csLastLogEntry :: LastLogEntry v
     -- ^ Index and term of the last log entry in the node's log
   } deriving (Show)
 
 type ClientReadReqs = Map Int (ClientId, Int)
 
-data LeaderState = LeaderState
+data LeaderState v = LeaderState
   { lsCommitIndex :: Index
     -- ^ Index of highest log entry known to be committed
   , lsLastApplied :: Index
@@ -142,11 +177,7 @@ data LeaderState = LeaderState
     -- ^ For each server, index of the next log entry to send to that server
   , lsMatchIndex :: Map NodeId Index
     -- ^ For each server, index of highest log entry known to be replicated on server
-  , lsLastLogEntryData
-      :: ( Index
-         , Term
-         , Maybe EntryIssuer
-         )
+  , lsLastLogEntry :: LastLogEntry v
     -- ^ Index, term, and client id of the last log entry in the node's log.
     -- The only time `Maybe ClientId` will be Nothing is at the initial term.
   , lsReadReqsHandled :: Int
@@ -161,35 +192,32 @@ data LeaderState = LeaderState
 --------------------------------------------------------------------------------
 
 -- | Update the last log entry in the node's log
-setLastLogEntryData :: NodeState ns -> Entries v -> NodeState ns
-setLastLogEntryData nodeState entries =
+setLastLogEntry :: NodeState s v -> Entries v -> NodeState s v
+setLastLogEntry nodeState entries =
   case entries of
     Empty -> nodeState
-    _ :|> e ->
+    _ :|> e -> do
+      let lastLogEntry = LastLogEntry e
       case nodeState of
         NodeFollowerState fs ->
-          NodeFollowerState fs
-            { fsLastLogEntryData = (entryIndex e, entryTerm e) }
+          NodeFollowerState fs { fsLastLogEntry = lastLogEntry }
         NodeCandidateState cs ->
-          NodeCandidateState cs
-            { csLastLogEntryData = (entryIndex e, entryTerm e) }
+          NodeCandidateState cs { csLastLogEntry = lastLogEntry }
         NodeLeaderState ls ->
-          NodeLeaderState ls
-            { lsLastLogEntryData = (entryIndex e, entryTerm e, Just (entryIssuer e)) }
+          NodeLeaderState ls { lsLastLogEntry = lastLogEntry }
 
 -- | Get the last applied index and the commit index of the last log entry in
 -- the node's log
-getLastLogEntryData :: NodeState ns -> (Index, Term)
-getLastLogEntryData nodeState =
+getLastLogEntry :: NodeState ns v -> LastLogEntry v
+getLastLogEntry nodeState =
   case nodeState of
-    NodeFollowerState fs -> fsLastLogEntryData fs
-    NodeCandidateState cs -> csLastLogEntryData cs
-    NodeLeaderState ls -> let (peTerm, peIndex, _) = lsLastLogEntryData ls
-                           in (peTerm, peIndex)
+    NodeFollowerState fs -> fsLastLogEntry fs
+    NodeCandidateState cs -> csLastLogEntry cs
+    NodeLeaderState ls -> lsLastLogEntry ls
 
 -- | Get the index of highest log entry applied to state machine and the index
 -- of highest log entry known to be committed
-getLastAppliedAndCommitIndex :: NodeState ns -> (Index, Index)
+getLastAppliedAndCommitIndex :: NodeState ns v -> (Index, Index)
 getLastAppliedAndCommitIndex nodeState =
   case nodeState of
     NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
@@ -197,21 +225,21 @@ getLastAppliedAndCommitIndex nodeState =
     NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
 
 -- | Check if node is in a follower state
-isFollower :: NodeState s  -> Bool
+isFollower :: NodeState s v -> Bool
 isFollower nodeState =
   case nodeState of
     NodeFollowerState _ -> True
     _ -> False
 
 -- | Check if node is in a candidate state
-isCandidate :: NodeState s  -> Bool
+isCandidate :: NodeState s v -> Bool
 isCandidate nodeState =
   case nodeState of
     NodeCandidateState _ -> True
     _ -> False
 
 -- | Check if node is in a leader state
-isLeader :: NodeState s  -> Bool
+isLeader :: NodeState s v -> Bool
 isLeader nodeState =
   case nodeState of
     NodeLeaderState _ -> True

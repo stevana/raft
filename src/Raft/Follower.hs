@@ -79,13 +79,13 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
     resetElectionTimeout
     pure (followerResultState Noop newFollowerState)
   where
-    updateFollowerState :: FollowerState -> FollowerState
+    updateFollowerState :: FollowerState v -> FollowerState v
     updateFollowerState fs =
       if aeLeaderCommit > fsCommitIndex fs
         then updateLeader (updateCommitIndex fs)
         else updateLeader fs
 
-    updateCommitIndex :: FollowerState -> FollowerState
+    updateCommitIndex :: FollowerState v -> FollowerState v
     updateCommitIndex followerState =
       case aeEntries of
         Empty ->
@@ -97,7 +97,7 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
           let newCommitIndex = min aeLeaderCommit (entryIndex e)
           in followerState { fsCommitIndex = newCommitIndex }
 
-    updateLeader :: FollowerState -> FollowerState
+    updateLeader :: FollowerState v -> FollowerState v
     updateLeader followerState = followerState { fsCurrentLeader = CurrentLeader (LeaderId sender) }
 
 -- | Followers should not respond to 'AppendEntriesResponse' messages.
@@ -133,9 +133,9 @@ handleRequestVote ns@(NodeFollowerState fs) sender RequestVote{..} = do
     -- Check if the requesting candidate's log is more up to date
     -- Section 5.4.1 in Raft Paper
     validCandidateLog =
-      let (lastLogEntryIdx, lastLogEntryTerm) = fsLastLogEntryData fs
-       in (rvLastLogTerm > lastLogEntryTerm)
-       || (rvLastLogTerm == lastLogEntryTerm && rvLastLogIndex >= lastLogEntryIdx)
+      let (lastEntryIdx, lastEntryTerm) = lastLogEntryIndexAndTerm (fsLastLogEntry fs)
+       in (rvLastLogTerm > lastEntryTerm)
+       || (rvLastLogTerm == lastEntryTerm && rvLastLogIndex >= lastEntryIdx)
 
 -- | Followers should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse :: RPCHandler 'Follower sm RequestVoteResponse v
@@ -149,7 +149,7 @@ handleTimeout ns@(NodeFollowerState fs) timeout =
     ElectionTimeout -> do
       logDebug "Follower times out. Starts election. Becomes candidate"
       candidateResultState StartElection <$>
-        startElection (fsCommitIndex fs) (fsLastApplied fs) (fsLastLogEntryData fs)
+        startElection (fsCommitIndex fs) (fsLastApplied fs) (fsLastLogEntry fs)
     -- Follower should ignore heartbeat timeout events
     HeartbeatTimeout -> pure (followerResultState Noop fs)
 

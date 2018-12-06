@@ -13,7 +13,10 @@
 module Raft.Monad where
 
 import Protolude hiding (pass)
+
+import Control.Arrow ((&&&))
 import Control.Monad.RWS
+
 import qualified Data.Set as Set
 
 import Raft.Action
@@ -67,14 +70,14 @@ tellAction a = tell [a]
 tellActions :: [Action sm v] -> TransitionM sm v ()
 tellActions as = tell as
 
-data TransitionEnv sm = TransitionEnv
+data TransitionEnv sm v = TransitionEnv
   { nodeConfig :: NodeConfig
   , stateMachine :: sm
-  , nodeState :: RaftNodeState
+  , nodeState :: RaftNodeState v
   }
 
 newtype TransitionM sm v a = TransitionM
-  { unTransitionM :: RaftLoggerT (RWS (TransitionEnv sm) [Action sm v] PersistentState) a
+  { unTransitionM :: RaftLoggerT v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) a
   } deriving (Functor, Applicative, Monad)
 
 instance MonadWriter [Action sm v] (TransitionM sm v) where
@@ -82,7 +85,7 @@ instance MonadWriter [Action sm v] (TransitionM sm v) where
   listen = TransitionM . RaftLoggerT . listen . unRaftLoggerT . unTransitionM
   pass = TransitionM . RaftLoggerT . pass . unRaftLoggerT . unTransitionM
 
-instance MonadReader (TransitionEnv sm) (TransitionM sm v) where
+instance MonadReader (TransitionEnv sm v) (TransitionM sm v) where
   ask = TransitionM . RaftLoggerT $ ask
   local f = TransitionM . RaftLoggerT . local f . unRaftLoggerT . unTransitionM
 
@@ -90,12 +93,11 @@ instance MonadState PersistentState (TransitionM sm v) where
   get = TransitionM . RaftLoggerT $ lift get
   put = TransitionM . RaftLoggerT . lift . put
 
-instance RaftLogger (RWS (TransitionEnv sm) [Action sm v] PersistentState) where
-  loggerNodeId = configNodeId <$> asks nodeConfig
-  loggerNodeState = asks nodeState
+instance RaftLogger v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) where
+  loggerCtx = asks ((configNodeId . nodeConfig) &&& nodeState)
 
 runTransitionM
-  :: TransitionEnv sm
+  :: TransitionEnv sm v
   -> PersistentState
   -> TransitionM sm v a
   -> ((a, [LogMsg]), PersistentState, [Action sm v])
@@ -109,9 +111,9 @@ askNodeId = asks (configNodeId . nodeConfig)
 -- Handlers
 --------------------------------------------------------------------------------
 
-type RPCHandler ns sm r v = RPCType r v => NodeState ns -> NodeId -> r -> TransitionM sm v (ResultState ns)
-type TimeoutHandler ns sm v = NodeState ns -> Timeout -> TransitionM sm v (ResultState ns)
-type ClientReqHandler ns sm v = NodeState ns -> ClientRequest v -> TransitionM sm v (ResultState ns)
+type RPCHandler ns sm r v = (RPCType r v, Show v) => NodeState ns v -> NodeId -> r -> TransitionM sm v (ResultState ns v)
+type TimeoutHandler ns sm v = Show v => NodeState ns v -> Timeout -> TransitionM sm v (ResultState ns v)
+type ClientReqHandler ns sm v = Show v => NodeState ns v -> ClientRequest v -> TransitionM sm v (ResultState ns v)
 
 --------------------------------------------------------------------------------
 -- RWS Helpers
@@ -152,9 +154,9 @@ appendLogEntries = tellAction . AppendLogEntries
 startElection
   :: Index
   -> Index
-  -> (Index, Term) -- ^ Last log entry data
-  -> TransitionM sm v CandidateState
-startElection commitIndex lastApplied lastLogEntryData = do
+  -> LastLogEntry v
+  -> TransitionM sm v (CandidateState v)
+startElection commitIndex lastApplied lastLogEntry = do
     incrementTerm
     voteForSelf
     resetElectionTimeout
@@ -165,7 +167,7 @@ startElection commitIndex lastApplied lastLogEntryData = do
       { csCommitIndex = commitIndex
       , csLastApplied = lastApplied
       , csVotes = Set.singleton selfNodeId
-      , csLastLogEntryData = lastLogEntryData
+      , csLastLogEntry = lastLogEntry
       }
   where
     requestVoteMessage = do
@@ -175,8 +177,8 @@ startElection commitIndex lastApplied lastLogEntryData = do
         RequestVote
           { rvTerm = term
           , rvCandidateId = selfNodeId
-          , rvLastLogIndex = fst lastLogEntryData
-          , rvLastLogTerm = snd lastLogEntryData
+          , rvLastLogIndex = lastLogEntryIndex lastLogEntry
+          , rvLastLogTerm = lastLogEntryTerm lastLogEntry
           }
 
     incrementTerm = do

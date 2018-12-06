@@ -1,6 +1,10 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Raft.Logging where
@@ -53,19 +57,17 @@ logMsgDataToText :: LogMsgData -> Text
 logMsgDataToText LogMsgData{..} =
   "<" <> toS logMsgNodeId <> " | " <> show logMsgNodeState <> ">: " <> logMsg
 
-class Monad m => RaftLogger m where
-  loggerNodeId :: m NodeId
-  loggerNodeState :: m RaftNodeState
+class Monad m => RaftLogger v m | m -> v where
+  loggerCtx :: m (NodeId, RaftNodeState v)
 
-mkLogMsgData :: RaftLogger m => Text -> m LogMsgData
+mkLogMsgData :: RaftLogger v m => Text -> m (LogMsgData)
 mkLogMsgData msg = do
-  nid <- loggerNodeId
-  ns <- nodeMode <$> loggerNodeState
-  pure $ LogMsgData nid ns msg
+  (nid, nodeState) <- loggerCtx
+  let mode = nodeMode nodeState
+  pure $ LogMsgData nid mode msg
 
-instance RaftLogger m => RaftLogger (RaftLoggerT m) where
-  loggerNodeId = lift loggerNodeId
-  loggerNodeState = lift loggerNodeState
+instance RaftLogger v m => RaftLogger v (RaftLoggerT v m) where
+  loggerCtx = lift loggerCtx
 
 --------------------------------------------------------------------------------
 -- Logging with IO
@@ -84,54 +86,54 @@ logToStdout = logToDest LogStdout
 logToFile :: MonadIO m => FilePath -> LogMsg -> m ()
 logToFile fp = logToDest (LogFile fp)
 
-logWithSeverityIO :: (RaftLogger m, MonadIO m) => Severity -> LogDest -> Text -> m ()
+logWithSeverityIO :: forall m v. (RaftLogger v m, MonadIO m) => Severity -> LogDest -> Text -> m ()
 logWithSeverityIO s logDest msg = do
   logMsgData <- mkLogMsgData msg
   now <- liftIO getCurrentTime
   let logMsg = LogMsg (Just now) s logMsgData
   logToDest logDest logMsg
 
-logInfoIO :: (RaftLogger m, MonadIO m) => LogDest -> Text -> m ()
+logInfoIO :: (RaftLogger v m, MonadIO m) => LogDest -> Text -> m ()
 logInfoIO = logWithSeverityIO Info
 
-logDebugIO :: (RaftLogger m, MonadIO m) => LogDest -> Text -> m ()
+logDebugIO :: (RaftLogger v m, MonadIO m) => LogDest -> Text -> m ()
 logDebugIO = logWithSeverityIO Debug
 
-logCriticalIO :: (RaftLogger m, MonadIO m) => LogDest -> Text -> m ()
+logCriticalIO :: (RaftLogger v m, MonadIO m) => LogDest -> Text -> m ()
 logCriticalIO = logWithSeverityIO Critical
 
 --------------------------------------------------------------------------------
 -- Pure Logging
 --------------------------------------------------------------------------------
 
-newtype RaftLoggerT m a = RaftLoggerT {
+newtype RaftLoggerT v m a = RaftLoggerT {
     unRaftLoggerT :: StateT [LogMsg] m a
   } deriving (Functor, Applicative, Monad, MonadState [LogMsg], MonadTrans)
 
 runRaftLoggerT
   :: Monad m
-  => RaftLoggerT m a -- ^ The computation from which to extract the logs
+  => RaftLoggerT v m a -- ^ The computation from which to extract the logs
   -> m (a, [LogMsg])
 runRaftLoggerT = flip runStateT [] . unRaftLoggerT
 
-type RaftLoggerM = RaftLoggerT Identity
+type RaftLoggerM v = RaftLoggerT v Identity
 
 runRaftLoggerM
-  :: RaftLoggerM a
+  :: RaftLoggerM v a
   -> (a, [LogMsg])
 runRaftLoggerM = runIdentity . runRaftLoggerT
 
-logWithSeverity :: RaftLogger m => Severity -> Text -> RaftLoggerT m ()
+logWithSeverity :: RaftLogger v m => Severity -> Text -> RaftLoggerT v m ()
 logWithSeverity s txt = do
   !logMsgData <- mkLogMsgData txt
   let !logMsg = LogMsg Nothing s logMsgData
   modify' (++ [logMsg])
 
-logInfo :: RaftLogger m => Text -> RaftLoggerT m ()
+logInfo :: RaftLogger v m => Text -> RaftLoggerT v m ()
 logInfo = logWithSeverity Info
 
-logDebug :: RaftLogger m => Text -> RaftLoggerT m ()
+logDebug :: RaftLogger v m => Text -> RaftLoggerT v m ()
 logDebug = logWithSeverity Debug
 
-logCritical :: RaftLogger m => Text -> RaftLoggerT m ()
+logCritical :: RaftLogger v m => Text -> RaftLoggerT v m ()
 logCritical = logWithSeverity Critical

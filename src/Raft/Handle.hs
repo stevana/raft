@@ -11,6 +11,8 @@ module Raft.Handle where
 
 import Protolude
 
+import Data.Serialize (Serialize)
+
 import qualified Raft.Follower as Follower
 import qualified Raft.Candidate as Candidate
 import qualified Raft.Leader as Leader
@@ -26,12 +28,12 @@ import Raft.Logging (LogMsg)
 -- | Main entry point for handling events
 handleEvent
   :: forall sm v.
-     (RSMP sm v, Show v)
-  => RaftNodeState
-  -> TransitionEnv sm
+     (RSMP sm v, Show v, Serialize v)
+  => RaftNodeState v
+  -> TransitionEnv sm v
   -> PersistentState
   -> Event v
-  -> (RaftNodeState, PersistentState, [Action sm v], [LogMsg])
+  -> (RaftNodeState v, PersistentState, [Action sm v], [LogMsg])
 handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistentState event =
     -- Rules for all servers:
     case handleNewerRPCTerm of
@@ -40,7 +42,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
           ((ResultState _ resultState, logMsgs'), persistentState'', outputs') ->
             (RaftNodeState resultState, persistentState'', outputs <> outputs', logMsgs <> logMsgs')
   where
-    handleNewerRPCTerm :: ((RaftNodeState, [LogMsg]), PersistentState, [Action sm v])
+    handleNewerRPCTerm :: ((RaftNodeState v, [LogMsg]), PersistentState, [Action sm v])
     handleNewerRPCTerm =
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ rpc)) ->
@@ -61,7 +63,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               else pure raftNodeState
         _ -> ((raftNodeState, []), persistentState, mempty)
 
-    convertToFollower :: forall s. NodeState s -> ResultState s
+    convertToFollower :: forall s. NodeState s v -> ResultState s v
     convertToFollower nodeState =
       case nodeState of
         NodeFollowerState _ ->
@@ -72,7 +74,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               { fsCurrentLeader = NoLeader
               , fsCommitIndex = csCommitIndex cs
               , fsLastApplied = csLastApplied cs
-              , fsLastLogEntryData = csLastLogEntryData cs
+              , fsLastLogEntry = csLastLogEntry cs
               , fsTermAtAEPrevIndex = Nothing
               }
         NodeLeaderState ls ->
@@ -81,9 +83,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               { fsCurrentLeader = NoLeader
               , fsCommitIndex = lsCommitIndex ls
               , fsLastApplied = lsLastApplied ls
-              , fsLastLogEntryData =
-                  let (lastLogEntryIdx, lastLogEntryTerm, _) = lsLastLogEntryData ls
-                   in (lastLogEntryIdx, lastLogEntryTerm)
+              , fsLastLogEntry = lsLastLogEntry ls
               , fsTermAtAEPrevIndex = Nothing
               }
 
@@ -97,7 +97,7 @@ data RaftHandler ns sm v = RaftHandler
   , handleClientRequest :: ClientReqHandler ns sm v
   }
 
-followerRaftHandler :: Show v => RaftHandler 'Follower sm v
+followerRaftHandler :: (Show v, Serialize v) => RaftHandler 'Follower sm v
 followerRaftHandler = RaftHandler
   { handleAppendEntries = Follower.handleAppendEntries
   , handleAppendEntriesResponse = Follower.handleAppendEntriesResponse
@@ -107,7 +107,7 @@ followerRaftHandler = RaftHandler
   , handleClientRequest = Follower.handleClientRequest
   }
 
-candidateRaftHandler :: Show v => RaftHandler 'Candidate sm v
+candidateRaftHandler :: (Show v, Serialize v) => RaftHandler 'Candidate sm v
 candidateRaftHandler = RaftHandler
   { handleAppendEntries = Candidate.handleAppendEntries
   , handleAppendEntriesResponse = Candidate.handleAppendEntriesResponse
@@ -117,7 +117,7 @@ candidateRaftHandler = RaftHandler
   , handleClientRequest = Candidate.handleClientRequest
   }
 
-leaderRaftHandler :: Show v => RaftHandler 'Leader sm v
+leaderRaftHandler :: (Show v, Serialize v) => RaftHandler 'Leader sm v
 leaderRaftHandler = RaftHandler
   { handleAppendEntries = Leader.handleAppendEntries
   , handleAppendEntriesResponse = Leader.handleAppendEntriesResponse
@@ -127,7 +127,7 @@ leaderRaftHandler = RaftHandler
   , handleClientRequest = Leader.handleClientRequest
   }
 
-mkRaftHandler :: forall ns sm v. Show v => NodeState ns -> RaftHandler ns sm v
+mkRaftHandler :: forall ns sm v. (Show v, Serialize v) => NodeState ns v -> RaftHandler ns sm v
 mkRaftHandler nodeState =
   case nodeState of
     NodeFollowerState _ -> followerRaftHandler
@@ -136,12 +136,12 @@ mkRaftHandler nodeState =
 
 handleEvent'
   :: forall ns sm v.
-     (RSMP sm v, Show v)
-  => NodeState ns
-  -> TransitionEnv sm
+     (RSMP sm v, Show v, Serialize v)
+  => NodeState ns v
+  -> TransitionEnv sm v
   -> PersistentState
   -> Event v
-  -> ((ResultState ns, [LogMsg]), PersistentState, [Action sm v])
+  -> ((ResultState ns v, [LogMsg]), PersistentState, [Action sm v])
 handleEvent' initNodeState transitionEnv persistentState event =
     runTransitionM transitionEnv persistentState $ do
       case event of
@@ -155,7 +155,7 @@ handleEvent' initNodeState transitionEnv persistentState event =
   where
     RaftHandler{..} = mkRaftHandler initNodeState
 
-    handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns)
+    handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns v)
     handleRPCMessage (RPCMessage sender rpc) =
       case rpc of
         AppendEntriesRPC appendEntries ->

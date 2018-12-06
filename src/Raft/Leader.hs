@@ -18,6 +18,7 @@ module Raft.Leader (
 import Protolude
 
 import qualified Data.Map as Map
+import Data.Serialize (Serialize)
 import Data.Sequence (Seq(Empty))
 import qualified Data.Set as Set
 import qualified Data.Sequence as Seq
@@ -42,9 +43,7 @@ handleAppendEntries :: RPCHandler 'Leader sm (AppendEntries v) v
 handleAppendEntries (NodeLeaderState ls)_ _  =
   pure (leaderResultState Noop ls)
 
-handleAppendEntriesResponse
-  :: forall sm v. Show v
-  => RPCHandler 'Leader sm AppendEntriesResponse v
+handleAppendEntriesResponse :: forall sm v. RPCHandler 'Leader sm AppendEntriesResponse v
 handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
   -- If AppendEntries fails (aerSuccess == False) because of log inconsistency,
   -- decrement nextIndex and retry
@@ -56,7 +55,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       send sender (SendAppendEntriesRPC aeData)
       pure (leaderResultState Noop newLeaderState)
   | otherwise = do
-      let (lastLogEntryIdx,_,_) = lsLastLogEntryData ls
+      let lastLogEntryIdx = lastLogEntryIndex (lsLastLogEntry ls)
           newNextIndices = Map.insert sender (lastLogEntryIdx + 1) (lsNextIndex ls)
           newMatchIndices = Map.insert sender lastLogEntryIdx (lsMatchIndex ls)
           newLeaderState = ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
@@ -64,7 +63,9 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       -- replicated an entry at a given term.
       newestLeaderState <- incrCommitIndex newLeaderState
       when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
-        let (entryIdx, _, entryIssuer) = lsLastLogEntryData newestLeaderState
+        let lastLogEntry = lsLastLogEntry newestLeaderState
+            entryIdx = lastLogEntryIndex lastLogEntry
+            entryIssuer = lastLogEntryIssuer lastLogEntry
         case entryIssuer of
           Nothing -> panic "No last log entry issuer"
           Just (LeaderIssuer _) -> pure ()
@@ -74,7 +75,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
         Nothing -> pure (leaderResultState Noop newestLeaderState)
         Just n -> handleReadReq n newestLeaderState
   where
-    handleReadReq :: Int -> LeaderState -> TransitionM sm v (ResultState 'Leader)
+    handleReadReq :: Int -> LeaderState v -> TransitionM sm v (ResultState 'Leader v)
     handleReadReq n leaderState = do
       networkSize <- Set.size <$> asks (configNodeIds . nodeConfig)
       let initReadReqs = lsReadRequest leaderState
@@ -120,7 +121,7 @@ handleTimeout (NodeLeaderState ls) timeout =
 -- | The leader handles all client requests, responding with the current state
 -- machine on a client read, and appending an entry to the log on a valid client
 -- write.
-handleClientRequest :: Show v => ClientReqHandler 'Leader sm v
+handleClientRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader sm v
 handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) = do
     case cr of
       ClientReadReq -> do
@@ -139,24 +140,25 @@ handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) 
   where
     mkNewLogEntry v = do
       currentTerm <- currentTerm <$> get
-      let (lastLogEntryIdx,_,_) = lsLastLogEntryData
+      let lastLogEntryIdx = lastLogEntryIndex lsLastLogEntry
       pure $ Entry
         { entryIndex = succ lastLogEntryIdx
         , entryTerm = currentTerm
         , entryValue = EntryValue v
         , entryIssuer = ClientIssuer cid
+        , entryPrevHash = hashLastLogEntry lsLastLogEntry
         }
 
 --------------------------------------------------------------------------------
 
 -- | If there exists an N such that N > commitIndex, a majority of
 -- matchIndex[i] >= N, and log[N].term == currentTerm: set commitIndex = N
-incrCommitIndex :: Show v => LeaderState -> TransitionM sm v LeaderState
+incrCommitIndex :: Show v => LeaderState v -> TransitionM sm v (LeaderState v)
 incrCommitIndex leaderState@LeaderState{..} = do
     logDebug "Checking if commit index should be incremented..."
-    let (_, lastLogEntryTerm, _) = lsLastLogEntryData
+    let lastEntryTerm = lastLogEntryTerm lsLastLogEntry
     currentTerm <- currentTerm <$> get
-    if majorityGreaterThanN && (lastLogEntryTerm == currentTerm)
+    if majorityGreaterThanN && (lastEntryTerm == currentTerm)
       then do
         logDebug $ "Incrementing commit index to: " <> show n
         incrCommitIndex leaderState { lsCommitIndex = n }
@@ -179,7 +181,7 @@ isMajority n m = n >= m `div` 2 + 1
 -- | Construct an AppendEntriesRPC given log entries and a leader state.
 mkAppendEntriesData
   :: Show v
-  => LeaderState
+  => LeaderState v
   -> EntriesSpec v
   -> TransitionM sm v (AppendEntriesData v)
 mkAppendEntriesData ls entriesSpec = do

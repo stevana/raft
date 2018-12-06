@@ -74,8 +74,8 @@ module Raft
   , isFollower
   , isCandidate
   , isLeader
-  , setLastLogEntryData
-  , getLastLogEntryData
+  , setLastLogEntry
+  , getLastLogEntry
   , getLastAppliedAndCommitIndex
 
   -- * Persistent state
@@ -115,6 +115,7 @@ import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
 import qualified Data.Map as Map
+import Data.Serialize (Serialize)
 import Data.Sequence (Seq(..), singleton)
 
 import Raft.Action
@@ -144,8 +145,8 @@ data RaftEnv v m = RaftEnv
   }
 
 newtype RaftT v m a = RaftT
-  { unRaftT :: ReaderT (RaftEnv v m) (StateT RaftNodeState m) a
-  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState RaftNodeState, MonadFail, Alternative, MonadPlus)
+  { unRaftT :: ReaderT (RaftEnv v m) (StateT (RaftNodeState v) m) a
+  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState v), MonadFail, Alternative, MonadPlus)
 
 instance MonadTrans (RaftT v) where
   lift = RaftT . lift . lift
@@ -156,13 +157,12 @@ deriving instance MonadCatch m => MonadCatch (RaftT v m)
 deriving instance MonadMask m => MonadMask (RaftT v m)
 deriving instance MonadConc m => MonadConc (RaftT v m)
 
-instance Monad m => RaftLogger (RaftT v m) where
-  loggerNodeId = asks (configNodeId . raftNodeConfig)
-  loggerNodeState = get
+instance Monad m => RaftLogger v (RaftT v m) where
+  loggerCtx = (,) <$> asks (configNodeId . raftNodeConfig) <*> get
 
 runRaftT
   :: MonadConc m
-  => RaftNodeState
+  => RaftNodeState v
   -> RaftEnv v m
   -> RaftT v m ()
   -> m ()
@@ -182,7 +182,7 @@ logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogDest
 -- | Run timers, RPC and client request handlers and start event loop.
 -- It should run forever
 runRaftNode
-  :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
+  :: ( Show v, Show sm, Serialize v, Show (Action sm v), Show (RaftLogError m)
      , MonadIO m, MonadConc m, MonadFail m
      , RSM sm v m
      , Show (RSMPError sm v)
@@ -223,7 +223,7 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
 
 handleEventLoop
   :: forall sm v m.
-     ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
+     ( Show v, Serialize v, Show sm, Show (Action sm v), Show (RaftLogError m)
      , MonadIO m, MonadConc m, MonadFail m
      , RSM sm v m
      , Show (RSMPError sm v)
@@ -238,6 +238,7 @@ handleEventLoop
   => sm
   -> RaftT v m ()
 handleEventLoop initRSM = do
+    setInitLastLogEntry
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
@@ -289,6 +290,17 @@ handleEventLoop initRSM = do
                     { fsTermAtAEPrevIndex = entryTerm <$> mEntry }
             _ -> pure ()
         _ -> pure ()
+
+    -- Load the last log entry from a existing log
+    setInitLastLogEntry :: RaftT v m ()
+    setInitLastLogEntry = do
+      RaftNodeState rns <- get
+      eLogEntry <- lift readLastLogEntry
+      case eLogEntry of
+        Left err -> throw err
+        Right Nothing -> pure ()
+        Right (Just e) ->
+          put (RaftNodeState (setLastLogEntry rns (singleton e)))
 
 handleActions
   :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
@@ -342,7 +354,7 @@ handleAction nodeConfig action = do
         Right _ -> do
           -- Update the last log entry data
           modify $ \(RaftNodeState ns) ->
-            RaftNodeState (setLastLogEntryData ns entries)
+            RaftNodeState (setLastLogEntry ns entries)
 
   where
     mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
@@ -370,7 +382,7 @@ handleAction nodeConfig action = do
                         case spec of
                           FromClientReadReq n -> Just n
                           _ -> Nothing
-                      (lastLogIndex, lastLogTerm) = getLastLogEntryData ns
+                      (lastLogIndex, lastLogTerm) = lastLogEntryIndexAndTerm (getLastLogEntry ns)
                   pure (Empty, lastLogIndex, lastLogTerm, readReq)
             let leaderId = LeaderId (configNodeId nodeConfig)
             pure . toRPC $
@@ -437,7 +449,7 @@ applyLogEntries stateMachine = do
               Right nsm -> applyLogEntries nsm
       else pure stateMachine
   where
-    incrLastApplied :: NodeState ns -> NodeState ns
+    incrLastApplied :: NodeState ns v -> NodeState ns v
     incrLastApplied nodeState =
       case nodeState of
         NodeFollowerState fs ->
@@ -450,10 +462,10 @@ applyLogEntries stateMachine = do
           let lastApplied' = incrIndex (lsLastApplied ls)
            in NodeLeaderState $ ls { lsLastApplied = lastApplied' }
 
-    lastApplied :: NodeState ns -> Index
+    lastApplied :: NodeState ns v -> Index
     lastApplied = fst . getLastAppliedAndCommitIndex
 
-    commitIndex :: NodeState ns -> Index
+    commitIndex :: NodeState ns v -> Index
     commitIndex = snd . getLastAppliedAndCommitIndex
 
 handleLogs

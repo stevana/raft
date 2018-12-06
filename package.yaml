@@ -43,6 +43,7 @@ dependencies:
 - word8
 - network
 - directory
+- cryptohash-sha256 
 
 default-extensions:
   NoImplicitPrelude

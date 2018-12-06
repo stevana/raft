@@ -15,8 +15,11 @@ module Raft.Log where
 
 import Protolude
 
+import qualified Crypto.Hash.SHA256 as SHA256
+
+import qualified Data.ByteString as BS
 import Data.Serialize
-import Data.Sequence (Seq(..), (|>))
+import Data.Sequence (Seq(..), (|>), foldlWithIndex)
 
 import Raft.Types
 
@@ -30,6 +33,15 @@ data EntryValue v
   | NoValue -- ^ Used as a first committed entry of a new term
   deriving (Show, Generic, Serialize)
 
+newtype EntryHash = EntryHash ByteString
+  deriving (Show, Eq, Generic, Serialize)
+
+genesisHash :: EntryHash
+genesisHash = EntryHash $ BS.replicate 32 0
+
+hashEntry :: Serialize v => Entry v -> EntryHash
+hashEntry = EntryHash . SHA256.hash . encode
+
 -- | Representation of an entry in the replicated log
 data Entry v = Entry
   { entryIndex :: Index
@@ -40,24 +52,51 @@ data Entry v = Entry
     -- ^ Command to update state machine
   , entryIssuer :: EntryIssuer
     -- ^ Id of the client that issued the command
+  , entryPrevHash :: EntryHash
   } deriving (Show, Generic, Serialize)
 
 type Entries v = Seq (Entry v)
 
 data InvalidLog
-  = InvalidIndex { expected :: Index, actual :: Index }
+  = InvalidIndex { expectedIndex :: Index, actualIndex :: Index }
+  | InvalidPrevHash { expectedHash :: EntryHash, actualHash :: EntryHash }
   deriving (Show)
 
--- | For debugging purposes
-validateLog :: Entries v -> Either InvalidLog ()
+-- | For debugging & testing purposes
+validateLog :: (Serialize v) => Entries v -> Either InvalidLog ()
 validateLog es =
-    case traverse (uncurry validateIndex) (zip (toList es) [Index 1..]) of
-      Left e -> Left e
-      Right _ -> Right ()
+    case es of
+      Empty -> Right ()
+      e :<| _ ->
+        second (const ()) $
+          foldlWithIndex accValidateEntry (Right Nothing) es
   where
-    validateIndex e idx
-      | entryIndex e == idx = Right ()
-      | otherwise = Left (InvalidIndex idx (entryIndex e))
+    accValidateEntry (Left err) _ _ = Left err
+    accValidateEntry (Right mPrevEntry) idx e = validateEntry mPrevEntry idx e
+
+    validateEntry mPrevEntry expectedIdx currEntry = do
+        case mPrevEntry of
+          Nothing -> validatePrevHash genesisHash currEntryPrevHash
+          Just prevEntry -> validatePrevHash (hashEntry prevEntry) currEntryPrevHash
+        validateIndex expectedEntryIdx currEntryIdx
+        pure (Just currEntry)
+      where
+        currEntryIdx = entryIndex currEntry
+        expectedEntryIdx = Index (fromIntegral expectedIdx + 1)
+
+        currEntryPrevHash = entryPrevHash currEntry
+
+    validateIndex :: Index -> Index -> Either InvalidLog ()
+    validateIndex  expectedIndex currIndex
+      | expectedIndex /= currIndex =
+          Left (InvalidIndex expectedIndex currIndex)
+      | otherwise = Right ()
+
+    validatePrevHash :: EntryHash -> EntryHash -> Either InvalidLog ()
+    validatePrevHash expectedHash currHash
+      | expectedHash /= currHash =
+          Left (InvalidPrevHash expectedHash currHash)
+      | otherwise = Right ()
 
 -- | Provides an interface for nodes to write log entries to storage.
 class (Show (RaftWriteLogError m), Monad m) => RaftWriteLog m v where

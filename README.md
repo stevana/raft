@@ -321,23 +321,32 @@ have further insight.
 2) In separate terminals, run some raft nodes:
 
     The format of the cmd line invocation is:
-    ``` raft-example <node-id> <peer-1-node-id> ... <peer-n-node-id> ```
+    ``` raft-example node <fresh/existing> <node-id> <peer-1-node-id> ... <peer-n-node-id> ```
 
     We are going to run a network of three nodes:
 
     - On terminal 1:
-    ```$ stack exec raft-example localhost:3001 localhost:3002 localhost:3003```
+
+    ```$ stack exec raft-example node fresh localhost:3001 localhost:3002 localhost:3003```
 
     - On terminal 2:
-    ```$ stack exec raft-example localhost:3002 localhost:3001 localhost:3003```
+
+    ```$ stack exec raft-example node fresh localhost:3002 localhost:3001 localhost:3003```
 
     - On terminal 3:
-    ```$ stack exec raft-example localhost:3003 localhost:3001 localhost:3002```
+
+    ```$ stack exec raft-example node fresh localhost:3003 localhost:3001 localhost:3002```
 
     The first node spawned should become candidate once its election's timer
     times out and request votes to other nodes. It will then become the leader,
     once it receives a majority of votes and will broadcast messages to all
     nodes at each heartbeat.
+
+    **Note:** If you want to run a raft example node with _existing_ persistent data,
+    pass the `existing` command line option to the `raft-example` program instead
+    of `fresh`: 
+    
+    ```$ stack exec raft-example node existing ...```
 
 3) Run a client:
 ```$ stack exec raft-example client```

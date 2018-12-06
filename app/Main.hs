@@ -234,29 +234,36 @@ main = do
     args <- (toS <$>) <$> getArgs
     case args of
       ["client"] -> clientMainHandler
-      (nid:nids) -> do
+      ("node":"fresh":nid:nids) -> do
         removeExampleFiles nid
         createExampleFiles nid
-
-        nSocketEnv <- initSocketEnv nid
-        nPersistentEnv <- initRaftFileStoreEnv nid
-        nEnv <- initNodeEnv nid
-        runRaftExampleM nEnv nSocketEnv nPersistentEnv $ do
-          let allNodeIds = Set.fromList (nid : nids)
-          let nodeConfig = NodeConfig
-                            { configNodeId = toS nid
-                            , configNodeIds = allNodeIds
-                            , configElectionTimeout = (1500000, 3000000)
-                            , configHeartbeatTimeout = 200000
-                            }
-          RaftExampleM $ lift acceptForkNode :: RaftExampleM Store StoreCmd ()
-          electionTimerSeed <- liftIO randomIO
-          runRaftNode nodeConfig LogStdout electionTimerSeed (mempty :: Store)
+        initNode (nid:nids)
+      ("node":"existing":nid:nids) -> do
+        createExampleFiles nid
+        initNode (nid:nids)
   where
+    initNode (nid:nids) = do
+      nSocketEnv <- initSocketEnv nid
+      nPersistentEnv <- initRaftFileStoreEnv nid
+      nEnv <- initNodeEnv nid
+      runRaftExampleM nEnv nSocketEnv nPersistentEnv $ do
+        let allNodeIds = Set.fromList (nid : nids)
+        let nodeConfig = NodeConfig
+                          { configNodeId = toS nid
+                          , configNodeIds = allNodeIds
+                          , configElectionTimeout = (1500000, 3000000)
+                          , configHeartbeatTimeout = 200000
+                          }
+        RaftExampleM $ lift acceptForkNode :: RaftExampleM Store StoreCmd ()
+        electionTimerSeed <- liftIO randomIO
+        runRaftNode nodeConfig LogStdout electionTimerSeed (mempty :: Store)
+
     initPersistentFile :: NodeId -> IO ()
     initPersistentFile nid = do
       psPath <- persistentFile nid
-      writeFile psPath (toS $ S.encode initPersistentState)
+      fileExists <- Directory.doesFileExist psPath
+      when (not fileExists) $
+        writeFile psPath (toS $ S.encode initPersistentState)
 
     persistentFile :: NodeId -> IO FilePath
     persistentFile nid = do
@@ -266,7 +273,9 @@ main = do
     initLogsFile :: NodeId -> IO ()
     initLogsFile nid = do
       logsPath <- logsFile nid
-      writeFile logsPath (toS $ S.encode (mempty :: Entries StoreCmd))
+      fileExists <- Directory.doesFileExist logsPath
+      when (not fileExists) $
+        writeFile logsPath (toS $ S.encode (mempty :: Entries StoreCmd))
 
     logsFile :: NodeId -> IO FilePath
     logsFile nid = do
@@ -276,7 +285,7 @@ main = do
     createExampleFiles :: NodeId -> IO ()
     createExampleFiles nid = void $ do
       tmpDir <- Directory.getTemporaryDirectory
-      Directory.createDirectory (tmpDir ++ "/" ++ toS nid)
+      Directory.createDirectoryIfMissing False (tmpDir ++ "/" ++ toS nid)
       initPersistentFile nid
       initLogsFile nid
 
@@ -284,7 +293,6 @@ main = do
     removeExampleFiles nid = handle (const (pure ()) :: SomeException -> IO ()) $ do
       tmpDir <- Directory.getTemporaryDirectory
       Directory.removeDirectoryRecursive (tmpDir ++ "/" ++ toS nid)
-
 
     initNodeEnv :: NodeId -> IO (NodeEnv Store)
     initNodeEnv nid = do

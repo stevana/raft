@@ -43,8 +43,11 @@ import           Text.Read                     (readEither)
 
 type Port = Int
 
+data Persistence = Fresh | Existing
+  deriving (Show)
+
 data Action (r :: * -> *)
-  = SpawnNode Port
+  = SpawnNode Port Persistence
   | KillNode (Port, Reference (Opaque ProcessHandle) r)
   | Set Integer
   | Read
@@ -63,6 +66,7 @@ data Response (r :: * -> *)
 
 data Model (r :: * -> *) = Model
   { nodes    :: [(Port, Reference (Opaque ProcessHandle) r)]
+  , started  :: Bool
   , value    :: Maybe Integer
   , isolated :: Maybe (Port, Reference (Opaque ProcessHandle) r)
   }
@@ -71,12 +75,16 @@ data Model (r :: * -> *) = Model
 deriving instance ToExpr (Model Concrete)
 
 initModel :: Model r
-initModel = Model [] Nothing Nothing
+initModel = Model [] False Nothing Nothing
 
 transition :: Model r -> Action r -> Response r -> Model r
 transition Model {..} act resp = case (act, resp) of
-  (SpawnNode port, SpawnedNode ph) -> Model { nodes = nodes ++ [(port, ph)], .. }
-  (SpawnNode port, SpawnFailed _)  -> Model {..}
+  (SpawnNode port _ , SpawnedNode ph) ->
+    let newNodes = nodes ++ [(port,ph)]
+     in if length newNodes == 3
+           then Model { nodes = newNodes, started = True, .. }
+           else Model { nodes = newNodes, .. }
+  (SpawnNode port _, SpawnFailed _)  -> Model {..}
   (KillNode (port, _ph), Ack)      -> Model { nodes = filter ((/= port) . fst) nodes, .. }
   (Set i, Ack)                     -> Model { value = Just i, .. }
   (Read, Value _i)                 -> Model {..}
@@ -160,7 +168,7 @@ command log cmd = go 20
               else return (Just line)
 
 semantics :: Handle -> Action Concrete -> IO (Response Concrete)
-semantics log (SpawnNode port1) = do
+semantics log (SpawnNode port1 p) = do
   hPutStrLn log "Spawning node"
   removePathForcibly ("/tmp/raft-log-" ++ show port1 ++ ".txt")
   log' <- openFile ("/tmp/raft-log-" ++ show port1 ++ ".txt") WriteMode
@@ -168,8 +176,11 @@ semantics log (SpawnNode port1) = do
         3000 -> (3001, 3002)
         3001 -> (3000, 3002)
         3002 -> (3000, 3001)
+  let persistence Fresh = "fresh"
+      persistence Existing = "existing"
   (_, _, _, ph) <- createProcess_ "raft node"
-    (proc "fiu-run" [ "-x", "stack", "exec", "raft-example"
+    (proc "fiu-run" [ "-x", "stack", "exec", "raft-example", "node"
+                    , persistence p
                     , "localhost:" ++ show port1
                     , "localhost:" ++ show port2
                     , "localhost:" ++ show port3
@@ -223,7 +234,10 @@ semantics log (FixConnection (port, ph)) = do
 
 generator :: Model Symbolic -> Gen (Action Symbolic)
 generator Model {..}
-  | length nodes < 3 = SpawnNode <$> elements ([3000..3002] \\ map fst nodes)
+  | length nodes < 3  =
+      if started
+        then flip SpawnNode Existing <$> elements ([3000..3002] \\ map fst nodes)
+        else flip SpawnNode Fresh <$> elements ([3000..3002] \\ map fst nodes)
   | otherwise        = case value of
       Nothing -> Set <$> arbitrary
       Just _  -> frequency $
@@ -283,14 +297,14 @@ test0 :: Handle -> Property
 test0 = runMany cmds
   where
     cmds = Commands
-      [ Command (SpawnNode 3000) (Set.fromList [ Var 0 ])
-      , Command (SpawnNode 3002) (Set.fromList [ Var 1 ])
-      , Command (SpawnNode 3001) (Set.fromList [ Var 2 ])
+      [ Command (SpawnNode 3000 Fresh) (Set.fromList [ Var 0 ])
+      , Command (SpawnNode 3002 Fresh) (Set.fromList [ Var 1 ])
+      , Command (SpawnNode 3001 Fresh) (Set.fromList [ Var 2 ])
       , Command (Set 4) Set.empty
       , Command Read Set.empty
       , Command
           (KillNode ( 3000 , Reference (Symbolic  (Var 0)) )) Set.empty
-      , Command (SpawnNode 3000) (Set.fromList [ Var 3 ])
+      , Command (SpawnNode 3000 Existing) (Set.fromList [ Var 3 ])
       , Command
           (BreakConnection ( 3001 , Reference (Symbolic  (Var 2)) ))
           Set.empty
@@ -305,7 +319,7 @@ test0 = runMany cmds
       , Command Incr Set.empty
       , Command
           (KillNode ( 3002 , Reference (Symbolic  (Var 1)) )) Set.empty
-      , Command (SpawnNode 3002) (Set.fromList [ Var 4 ])
+      , Command (SpawnNode 3002 Existing) (Set.fromList [ Var 4 ])
       , Command Read Set.empty
       ]
 

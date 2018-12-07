@@ -8,13 +8,11 @@
 module QuickCheckStateMachine where
 
 import           Control.Concurrent            (threadDelay)
-import           Control.Exception             (bracket)
 import           Control.Monad.IO.Class        (liftIO)
 import           Data.Bifunctor                (bimap)
 import           Data.Char                     (isDigit)
 import           Data.List                     (isInfixOf, (\\))
 import           Data.Maybe                    (isJust, isNothing)
-import qualified Data.Set                      as Set
 import           Data.TreeDiff                 (ToExpr)
 import           GHC.Generics                  (Generic, Generic1)
 import           Prelude
@@ -28,14 +26,21 @@ import           System.Process                (ProcessHandle, StdStream (Create
                                                 callCommand, createProcess_,
                                                 getPid, getProcessExitCode,
                                                 proc, std_err, std_in, std_out,
-                                                terminateProcess, withCreateProcess)
+                                                terminateProcess,
+                                                withCreateProcess)
 import           System.Timeout                (timeout)
-import           Test.QuickCheck
+import           Test.QuickCheck               (Gen, Property, arbitrary,
+                                                elements, frequency,
+                                                noShrinking, shrink,
+                                                withMaxSuccess, (===))
 import           Test.QuickCheck.Monadic       (monadicIO)
-import           Test.StateMachine
-import           Test.StateMachine.Types       (Command (..), Commands (..),
-                                                Reference (..), Symbolic (..),
-                                                Var (..))
+import           Test.StateMachine             (Concrete, GenSym, Logic (..),
+                                                Opaque (..), Reason (Ok),
+                                                Reference, StateMachine (..),
+                                                Symbolic, forAllCommands,
+                                                genSym, opaque, prettyCommands,
+                                                reference, runCommands, (.&&),
+                                                (.//), (.==), (.>=), (.<))
 import qualified Test.StateMachine.Types.Rank2 as Rank2
 import           Text.Read                     (readEither)
 
@@ -79,12 +84,12 @@ initModel = Model [] False Nothing Nothing
 
 transition :: Model r -> Action r -> Response r -> Model r
 transition Model {..} act resp = case (act, resp) of
-  (SpawnNode port _ , SpawnedNode ph) ->
-    let newNodes = nodes ++ [(port,ph)]
+  (SpawnNode port _, SpawnedNode ph) ->
+    let newNodes = nodes ++ [(port, ph)]
      in if length newNodes == 3
            then Model { nodes = newNodes, started = True, .. }
            else Model { nodes = newNodes, .. }
-  (SpawnNode port _, SpawnFailed _)  -> Model {..}
+  (SpawnNode {}, SpawnFailed _)    -> Model {..}
   (KillNode (port, _ph), Ack)      -> Model { nodes = filter ((/= port) . fst) nodes, .. }
   (Set i, Ack)                     -> Model { value = Just i, .. }
   (Read, Value _i)                 -> Model {..}
@@ -94,6 +99,7 @@ transition Model {..} act resp = case (act, resp) of
   (Read, Timeout)                  -> Model {..}
   (Set {}, Timeout)                -> Model {..}
   (Incr {}, Timeout)               -> Model {..}
+  (_, _)                           -> error "transition"
 
 precondition :: Model Symbolic -> Action Symbolic -> Logic
 precondition Model {..} act = case act of
@@ -122,61 +128,64 @@ postcondition Model {..} act resp = case (act, resp) of
   (_,            _)              -> Bot .// "postcondition"
 
 command :: Handle -> String -> IO (Maybe String)
-command log cmd = go 20
+command h cmd = go 20
   where
+    go :: Int -> IO (Maybe String)
     go 0 = return Nothing
     go n = do
       let cp =
             (proc "stack" ["exec", "raft-example", "client"])
               { std_in  = CreatePipe
               , std_out = CreatePipe
-              , std_err = CreatePipe -- XXX: UseHandle log
+              , std_err = CreatePipe -- XXX: UseHandle h
               }
-      withCreateProcess cp $ \(Just sin) (Just sout) _serr ph -> do
+      withCreateProcess cp $ \(Just hin) (Just hout) _herr _ph -> do
         threadDelay 100000
-        hSetBuffering sin  NoBuffering
-        hSetBuffering sout NoBuffering
-        hPutStrLn sin "addNode localhost:3000"
-        hPutStrLn sin "addNode localhost:3001"
-        hPutStrLn sin "addNode localhost:3002"
-        hPutStrLn log cmd
-        hPutStrLn sin cmd
-        mresp <- getResponse sout
+        hSetBuffering hin  NoBuffering
+        hSetBuffering hout NoBuffering
+        hPutStrLn hin "addNode localhost:3000"
+        hPutStrLn hin "addNode localhost:3001"
+        hPutStrLn hin "addNode localhost:3002"
+        hPutStrLn h cmd
+        hPutStrLn hin cmd
+        mresp <- getResponse hout
         case mresp of
           Nothing   -> do
-            hPutStrLn log ("timeout, retrying to send command: " ++ cmd)
+            hPutStrLn h ("timeout, retrying to send command: " ++ cmd)
             threadDelay 100000
             go (n - 1)
           Just resp ->
             if "system doesn't have a leader" `isInfixOf` resp
             then do
-              hPutStrLn log "No leader, retrying..."
+              hPutStrLn h "No leader, retrying..."
               threadDelay 100000
               go n
             else do
-              hPutStrLn log ("got response `" ++ resp ++ "'")
+              hPutStrLn h ("got response `" ++ resp ++ "'")
               return (Just resp)
       where
         getResponse :: Handle -> IO (Maybe String)
-        getResponse h = do
-          mline <- timeout 500000 (hGetLine h)
+        getResponse hout = do
+          mline <- timeout 500000 (hGetLine hout)
           case mline of
             Nothing   -> return Nothing
             Just line ->
               if "New leader found" `isInfixOf` line
-              then getResponse h
+              then getResponse hout
               else return (Just line)
 
 semantics :: Handle -> Action Concrete -> IO (Response Concrete)
-semantics log (SpawnNode port1 p) = do
-  hPutStrLn log "Spawning node"
+semantics h (SpawnNode port1 p) = do
+  hPutStrLn h "Spawning node"
   removePathForcibly ("/tmp/raft-log-" ++ show port1 ++ ".txt")
-  log' <- openFile ("/tmp/raft-log-" ++ show port1 ++ ".txt") WriteMode
-  let (port2, port3) = case port1 of
+  h' <- openFile ("/tmp/raft-log-" ++ show port1 ++ ".txt") WriteMode
+  let port2, port3 :: Int
+      (port2, port3) = case port1 of
         3000 -> (3001, 3002)
         3001 -> (3000, 3002)
         3002 -> (3000, 3001)
-  let persistence Fresh = "fresh"
+        _    -> error "semantics: invalid port1"
+  let persistence Fresh    = "fresh"
       persistence Existing = "existing"
   (_, _, _, ph) <- createProcess_ "raft node"
     (proc "fiu-run" [ "-x", "stack", "exec", "raft-example", "node"
@@ -185,17 +194,17 @@ semantics log (SpawnNode port1 p) = do
                     , "localhost:" ++ show port2
                     , "localhost:" ++ show port3
                     ])
-      { std_out = UseHandle log'
-      , std_err = UseHandle log'
+      { std_out = UseHandle h'
+      , std_err = UseHandle h'
       }
   mec <- getProcessExitCode ph
   case mec of
     Nothing -> return (SpawnedNode (reference (Opaque ph)))
     Just ec -> do
-      hPutStrLn log (show ec)
+      hPutStrLn h (show ec)
       return (SpawnFailed port1)
-semantics log (KillNode (_port, ph)) = do
-  hPutStrLn log "Killing node"
+semantics h (KillNode (_port, ph)) = do
+  hPutStrLn h "Killing node"
   terminateProcess (opaque ph)
   return Ack
 semantics hs (Set i) = do
@@ -219,14 +228,14 @@ semantics hs Incr = do
   case mresp of
     Nothing    -> return Timeout
     Just _resp -> return Ack
-semantics log (BreakConnection (port, ph)) = do
-  hPutStrLn log ("Break connection, port: " ++ show port)
+semantics h (BreakConnection (port, ph)) = do
+  hPutStrLn h ("Break connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
   callCommand ("fiu-ctrl -c \"enable name=posix/io/net/send\" " ++ show pid)
   callCommand ("fiu-ctrl -c \"enable name=posix/io/net/recv\" " ++ show pid)
   return Ack
-semantics log (FixConnection (port, ph)) = do
-  hPutStrLn log ("Fix connection, port: " ++ show port)
+semantics h (FixConnection (port, ph)) = do
+  hPutStrLn h ("Fix connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
   callCommand ("fiu-ctrl -c \"disable name=posix/io/net/send\" " ++ show pid)
   callCommand ("fiu-ctrl -c \"disable name=posix/io/net/recv\" " ++ show pid)
@@ -266,62 +275,20 @@ mock _m FixConnection {}   = pure Ack
 setup :: IO Handle
 setup = do
   removePathForcibly "/tmp/raft-log.txt"
-  log <- openFile "/tmp/raft-log.txt" WriteMode
-  hSetBuffering log NoBuffering
-  return log
+  h <- openFile "/tmp/raft-log.txt" WriteMode
+  hSetBuffering h NoBuffering
+  return h
 
 sm :: Handle -> StateMachine Model Action IO Response
-sm log = StateMachine initModel transition precondition postcondition
-               Nothing generator Nothing shrinker (semantics log) mock
+sm h = StateMachine initModel transition precondition postcondition
+               Nothing generator Nothing shrinker (semantics h) mock
 
-sequential :: Property
-sequential = noShrinking $
+prop_sequential :: Property
+prop_sequential = withMaxSuccess 5 $ noShrinking $
   forAllCommands (sm undefined) (Just 20) $ \cmds -> monadicIO $ do
-    log <- liftIO setup
-    let sm' = sm log
+    h <- liftIO setup
+    let sm' = sm h
     (hist, model, res) <- runCommands sm' cmds
     prettyCommands sm' hist (res === Ok)
-    liftIO (hClose log)
+    liftIO (hClose h)
     liftIO (mapM_ (terminateProcess . opaque . snd) (nodes model))
-
-unit_sequential :: IO ()
-unit_sequential = verboseCheck sequential
-
-runMany :: Commands Action -> Handle -> Property
-runMany cmds log = monadicIO $ do
-  (hist, model, res) <- runCommands (sm log) cmds
-  prettyCommands (sm log) hist (res === Ok)
-  liftIO (mapM_ (terminateProcess . opaque . snd) (nodes model))
-
-test0 :: Handle -> Property
-test0 = runMany cmds
-  where
-    cmds = Commands
-      [ Command (SpawnNode 3000 Fresh) (Set.fromList [ Var 0 ])
-      , Command (SpawnNode 3002 Fresh) (Set.fromList [ Var 1 ])
-      , Command (SpawnNode 3001 Fresh) (Set.fromList [ Var 2 ])
-      , Command (Set 4) Set.empty
-      , Command Read Set.empty
-      , Command
-          (KillNode ( 3000 , Reference (Symbolic  (Var 0)) )) Set.empty
-      , Command (SpawnNode 3000 Existing) (Set.fromList [ Var 3 ])
-      , Command
-          (BreakConnection ( 3001 , Reference (Symbolic  (Var 2)) ))
-          Set.empty
-      , Command Read Set.empty
-      , Command Incr Set.empty
-      , Command Read Set.empty
-      , Command Incr Set.empty
-      , Command
-          (FixConnection ( 3001 , Reference (Symbolic  (Var 2)) )) Set.empty
-      , Command Read Set.empty
-      , Command Read Set.empty
-      , Command Incr Set.empty
-      , Command
-          (KillNode ( 3002 , Reference (Symbolic  (Var 1)) )) Set.empty
-      , Command (SpawnNode 3002 Existing) (Set.fromList [ Var 4 ])
-      , Command Read Set.empty
-      ]
-
-unit_test0 :: IO ()
-unit_test0 = bracket setup hClose (verboseCheck . test0)

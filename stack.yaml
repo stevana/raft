@@ -5,3 +5,5 @@ packages:
 
 extra-deps:
 - repline-0.2.0.0
+- quickcheck-state-machine-0.4.3
+- tree-diff-0.0.2

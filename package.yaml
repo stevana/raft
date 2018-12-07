@@ -77,13 +77,16 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
+    - dejafu
+    - hunit-dejafu
+    - libraft
+    - process
+    - QuickCheck
+    - quickcheck-state-machine
     - tasty
+    - tasty-dejafu
     - tasty-discover
+    - tasty-expected-failure
     - tasty-hunit
     - tasty-quickcheck
-    - dejafu
-    - tasty-dejafu
-    - tasty-expected-failure
-    - hunit-dejafu
-    - QuickCheck
-    - libraft
+    - tree-diff

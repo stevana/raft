@@ -55,25 +55,25 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       send sender (SendAppendEntriesRPC aeData)
       pure (leaderResultState Noop newLeaderState)
   | otherwise = do
-      let lastLogEntryIdx = lastLogEntryIndex (lsLastLogEntry ls)
-          newNextIndices = Map.insert sender (lastLogEntryIdx + 1) (lsNextIndex ls)
-          newMatchIndices = Map.insert sender lastLogEntryIdx (lsMatchIndex ls)
-          newLeaderState = ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
-      -- Increment leader commit index if now a majority of followers have
-      -- replicated an entry at a given term.
-      newestLeaderState <- incrCommitIndex newLeaderState
-      when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
-        let lastLogEntry = lsLastLogEntry newestLeaderState
-            entryIdx = lastLogEntryIndex lastLogEntry
-            entryIssuer = lastLogEntryIssuer lastLogEntry
-        case entryIssuer of
-          Nothing -> panic "No last log entry issuer"
-          Just (LeaderIssuer _) -> pure ()
-          Just (ClientIssuer cid) -> tellActions [RespondToClient cid (ClientWriteResponse (ClientWriteResp entryIdx))]
-
       case aerReadRequest appendEntriesResp of
-        Nothing -> pure (leaderResultState Noop newestLeaderState)
-        Just n -> handleReadReq n newestLeaderState
+        Nothing -> do
+          let lastLogEntryIdx = lastLogEntryIndex (lsLastLogEntry ls)
+              newNextIndices = Map.insert sender (lastLogEntryIdx + 1) (lsNextIndex ls)
+              newMatchIndices = Map.insert sender lastLogEntryIdx (lsMatchIndex ls)
+              newLeaderState = ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
+          -- Increment leader commit index if now a majority of followers have
+          -- replicated an entry at a given term.
+          newestLeaderState <- incrCommitIndex newLeaderState
+          when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
+            let lastLogEntry = lsLastLogEntry newestLeaderState
+                entryIdx = lastLogEntryIndex lastLogEntry
+                entryIssuer = lastLogEntryIssuer lastLogEntry
+            case entryIssuer of
+              Nothing -> panic "No last log entry issuer"
+              Just (LeaderIssuer _) -> pure ()
+              Just (ClientIssuer cid) -> tellActions [RespondToClient cid (ClientWriteResponse (ClientWriteResp entryIdx))]
+          pure (leaderResultState Noop newestLeaderState)
+        Just n -> handleReadReq n ls
   where
     handleReadReq :: Int -> LeaderState v -> TransitionM sm v (ResultState 'Leader v)
     handleReadReq n leaderState = do

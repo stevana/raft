@@ -8,11 +8,13 @@
 module QuickCheckStateMachine where
 
 import           Control.Concurrent            (threadDelay)
+import           Control.Exception             (bracket)
 import           Control.Monad.IO.Class        (liftIO)
 import           Data.Bifunctor                (bimap)
 import           Data.Char                     (isDigit)
 import           Data.List                     (isInfixOf, (\\))
 import           Data.Maybe                    (isJust, isNothing)
+import qualified Data.Set                      as Set
 import           Data.TreeDiff                 (ToExpr)
 import           GHC.Generics                  (Generic, Generic1)
 import           Prelude
@@ -32,7 +34,8 @@ import           System.Timeout                (timeout)
 import           Test.QuickCheck               (Gen, Property, arbitrary,
                                                 elements, frequency,
                                                 noShrinking, shrink,
-                                                withMaxSuccess, (===))
+                                                verboseCheck, withMaxSuccess,
+                                                (===))
 import           Test.QuickCheck.Monadic       (monadicIO)
 import           Test.StateMachine             (Concrete, GenSym, Logic (..),
                                                 Opaque (..), Reason (Ok),
@@ -40,7 +43,9 @@ import           Test.StateMachine             (Concrete, GenSym, Logic (..),
                                                 Symbolic, forAllCommands,
                                                 genSym, opaque, prettyCommands,
                                                 reference, runCommands, (.&&),
-                                                (.//), (.==), (.>=), (.<))
+                                                (.//), (.<), (.==), (.>=))
+import           Test.StateMachine.Types       (Command (..), Commands (..),
+                                                Symbolic (..), Var (..), Reference(..))
 import qualified Test.StateMachine.Types.Rank2 as Rank2
 import           Text.Read                     (readEither)
 
@@ -64,6 +69,8 @@ data Action (r :: * -> *)
 data Response (r :: * -> *)
   = SpawnedNode (Reference (Opaque ProcessHandle) r)
   | SpawnFailed Port
+  | BrokeConnection
+  | FixedConnection
   | Ack
   | Timeout
   | Value (Either String Integer)
@@ -94,8 +101,8 @@ transition Model {..} act resp = case (act, resp) of
   (Set i, Ack)                     -> Model { value = Just i, .. }
   (Read, Value _i)                 -> Model {..}
   (Incr, Ack)                      -> Model { value = succ <$> value, ..}
-  (BreakConnection ph, Ack)        -> Model { isolated = Just ph, .. }
-  (FixConnection _ph, Ack)         -> Model { isolated = Nothing, .. }
+  (BreakConnection ph, BrokeConnection) -> Model { isolated = Just ph, .. }
+  (FixConnection _ph, FixedConnection)  -> Model { isolated = Nothing, .. }
   (Read, Timeout)                  -> Model {..}
   (Set {}, Timeout)                -> Model {..}
   (Incr {}, Timeout)               -> Model {..}
@@ -120,8 +127,8 @@ postcondition Model {..} act resp = case (act, resp) of
   (KillNode {}, Ack)             -> Top
   (Set {}, Ack)                  -> Top
   (Incr {}, Ack)                 -> Top
-  (BreakConnection {}, Ack)      -> Top
-  (FixConnection {}, Ack)        -> Top
+  (BreakConnection {}, BrokeConnection) -> Top
+  (FixConnection {}, FixedConnection)   -> Top
   (Read,    Timeout)             -> Boolean (isJust isolated) .// "Read timeout"
   (Set {},  Timeout)             -> Boolean (isJust isolated) .// "Set timeout"
   (Incr {}, Timeout)             -> Boolean (isJust isolated) .// "Incr timeout"
@@ -152,7 +159,7 @@ command h cmd = go 20
         case mresp of
           Nothing   -> do
             hPutStrLn h ("timeout, retrying to send command: " ++ cmd)
-            threadDelay 100000
+            threadDelay 500000
             go (n - 1)
           Just resp ->
             if "system doesn't have a leader" `isInfixOf` resp
@@ -197,6 +204,7 @@ semantics h (SpawnNode port1 p) = do
       { std_out = UseHandle h'
       , std_err = UseHandle h'
       }
+  threadDelay 1000000
   mec <- getProcessExitCode ph
   case mec of
     Nothing -> return (SpawnedNode (reference (Opaque ph)))
@@ -231,15 +239,19 @@ semantics hs Incr = do
 semantics h (BreakConnection (port, ph)) = do
   hPutStrLn h ("Break connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
+  threadDelay 2000000
   callCommand ("fiu-ctrl -c \"enable name=posix/io/net/send\" " ++ show pid)
   callCommand ("fiu-ctrl -c \"enable name=posix/io/net/recv\" " ++ show pid)
-  return Ack
+  threadDelay 2000000
+  return BrokeConnection
 semantics h (FixConnection (port, ph)) = do
   hPutStrLn h ("Fix connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
+  threadDelay 2000000
   callCommand ("fiu-ctrl -c \"disable name=posix/io/net/send\" " ++ show pid)
   callCommand ("fiu-ctrl -c \"disable name=posix/io/net/recv\" " ++ show pid)
-  return Ack
+  threadDelay 10000000
+  return FixedConnection
 
 generator :: Model Symbolic -> Gen (Action Symbolic)
 generator Model {..}
@@ -292,3 +304,37 @@ prop_sequential = withMaxSuccess 5 $ noShrinking $
     prettyCommands sm' hist (res === Ok)
     liftIO (hClose h)
     liftIO (mapM_ (terminateProcess . opaque . snd) (nodes model))
+
+------------------------------------------------------------------------
+
+runMany :: Commands Action -> Handle -> Property
+runMany cmds log = monadicIO $ do
+  (hist, model, res) <- runCommands (sm log) cmds
+  prettyCommands (sm log) hist (res === Ok)
+  liftIO (mapM_ (terminateProcess . opaque . snd) (nodes model))
+
+swizzleClog :: Handle -> Property
+swizzleClog = runMany cmds
+  where
+    cmds = Commands
+      [ Command (SpawnNode 3000 Fresh) (Set.fromList [ Var 0 ])
+      , Command (SpawnNode 3001 Fresh) (Set.fromList [ Var 1 ])
+      , Command (SpawnNode 3002 Fresh) (Set.fromList [ Var 2 ])
+      , Command (Set 0) Set.empty
+      , Command (BreakConnection ( 3000 , Reference (Symbolic  (Var 0)) )) Set.empty
+      , Command Incr Set.empty
+      , Command (BreakConnection ( 3001 , Reference (Symbolic  (Var 1)) )) Set.empty
+      , Command Incr Set.empty
+      , Command (BreakConnection ( 3002 , Reference (Symbolic  (Var 2)) )) Set.empty
+      , Command Incr Set.empty
+      , Command (FixConnection ( 3002 , Reference (Symbolic  (Var 2)) )) Set.empty
+      , Command Incr Set.empty
+      , Command (FixConnection ( 3001 , Reference (Symbolic  (Var 1)) )) Set.empty
+      , Command Incr Set.empty
+      , Command (FixConnection ( 3000 , Reference (Symbolic  (Var 0)) )) Set.empty
+      , Command Incr Set.empty
+      , Command Read Set.empty
+      ]
+
+unit_swizzleClog :: IO ()
+unit_swizzleClog = bracket setup hClose (verboseCheck . swizzleClog)

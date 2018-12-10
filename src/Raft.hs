@@ -265,7 +265,7 @@ handleEventLoop initRSM = do
         Right _ -> pure ()
       -- Update raft node state with the resulting node state
       put resRaftNodeState
-      -- Handle logs producek by core state machine
+      -- Handle logs produced by core state machine
       handleLogs logMsgs
       -- Handle actions produced by core state machine
       handleActions nodeConfig actions

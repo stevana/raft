@@ -72,7 +72,7 @@ acceptClientConnections :: S.Serialize sm => RaftSocketClientM (Either [Char] (C
 acceptClientConnections = do
   socketEnv@ClientSocketEnv{..} <- ask
   liftIO $ N.accept clientSocket $ \(sock', sockAddr') -> do
-    recvSockM <- N.recv sock' 4096
+    recvSockM <- N.recv sock' 32768
     case recvSockM of
       Nothing -> pure $ Left "Received empty data from socket"
       Just recvSock -> pure (S.decode recvSock)

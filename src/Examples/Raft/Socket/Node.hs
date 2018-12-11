@@ -146,7 +146,7 @@ acceptForkNode = do
   socketEnv@NodeSocketEnv{..} <- ask
   void $ fork $ void $ forever $ acceptFork nsSocket $ \(sock', sockAddr') ->
     forever $ do
-      recvSockM <- recv sock' 4096
+      recvSockM <- recv sock' 32768
       case recvSockM of
         Nothing -> panic "Socket was closed on the other end"
         Just recvSock -> case ((S.decode :: ByteString -> Either [Char] (MessageEvent v)) recvSock) of

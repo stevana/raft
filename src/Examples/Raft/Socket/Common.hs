@@ -11,7 +11,10 @@ import Raft.Types
 
 -- | Convert a host and a port to a valid NodeId
 hostPortToNid :: (N.HostName, N.ServiceName) -> NodeId
-hostPortToNid (host, port) = toS $ host ++ ":" ++ toS port
+hostPortToNid = toS . hostPortToNidBS
+
+hostPortToNidBS :: (N.HostName, N.ServiceName) -> ByteString
+hostPortToNidBS (host, port) = toS $ host ++ ":" ++ toS port
 
 -- | Retrieve the host and port from a valid NodeId
 nidToHostPort :: NodeId -> (N.HostName, N.ServiceName)

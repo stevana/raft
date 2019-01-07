@@ -18,13 +18,15 @@ import Protolude
 import qualified Crypto.Hash.SHA256 as SHA256
 
 import qualified Data.ByteString as BS
+import qualified Data.Map as Map
 import Data.Serialize
 import Data.Sequence (Seq(..), (|>), foldlWithIndex)
 
+import Raft.Client
 import Raft.Types
 
 data EntryIssuer
-  = ClientIssuer ClientId
+  = ClientIssuer ClientId SerialNum
   | LeaderIssuer LeaderId
   deriving (Show, Generic, Serialize)
 
@@ -97,6 +99,17 @@ validateLog es =
       | expectedHash /= currHash =
           Left (InvalidPrevHash expectedHash currHash)
       | otherwise = Right ()
+
+clientReqData :: Entries v -> Map ClientId (SerialNum, Index)
+clientReqData = go mempty
+  where
+    go acc es =
+      case es of
+        Empty -> acc
+        e :<| rest ->
+          case entryIssuer e of
+            LeaderIssuer _ -> go acc rest
+            ClientIssuer cid sn -> go (Map.insert cid (sn, entryIndex e) acc) rest
 
 -- | Provides an interface for nodes to write log entries to storage.
 class (Show (RaftWriteLogError m), Monad m) => RaftWriteLog m v where

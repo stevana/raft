@@ -103,7 +103,7 @@ module Raft
   , AppendEntriesData(..)
   ) where
 
-import Protolude hiding (STM, TChan, newTChan, readTChan, writeTChan, atomically)
+import Protolude hiding (STM, TChan, newTChan, readBoundedChan, writeBoundedChan, atomically)
 
 import Control.Monad.Conc.Class
 import Control.Concurrent.STM.Timer
@@ -117,6 +117,7 @@ import Control.Monad.Trans.Class
 import qualified Data.Map as Map
 import Data.Serialize (Serialize)
 import Data.Sequence (Seq(..), singleton)
+import Data.Time.Clock.System (getSystemTime)
 
 import Raft.Action
 import Raft.Client
@@ -253,6 +254,8 @@ handleEventLoop initRSM = do
       logDebug $ "[NodeState]: " <> show raftNodeState
       logDebug $ "[State Machine]: " <> show stateMachine
       logDebug $ "[Persistent State]: " <> show persistentState
+      -- Right (log :: Entries v) <- lift $ readLogEntriesFrom index0
+      -- logDebug $ "[Log]: " <> show log
       -- Perform core state machine transition, handling the current event
       nodeConfig <- asks raftNodeConfig
       let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
@@ -342,8 +345,8 @@ handleAction nodeConfig action = do
     BroadcastRPC nids sendRpcAction -> do
       rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
       mapConcurrently_ (lift . flip sendRPC rpcMsg) nids
-    RespondToClient cid cr -> lift $ sendClient cid cr
-    ResetTimeoutTimer tout ->
+    RespondToClient cid cr -> void . fork . lift $ sendClient cid cr
+    ResetTimeoutTimer tout -> do
       case tout of
         ElectionTimeout -> lift . resetElectionTimer =<< ask
         HeartbeatTimeout -> lift . resetHeartbeatTimer =<< ask
@@ -355,8 +358,27 @@ handleAction nodeConfig action = do
           -- Update the last log entry data
           modify $ \(RaftNodeState ns) ->
             RaftNodeState (setLastLogEntry ns entries)
-
+    UpdateClientReqCacheFrom idx -> do
+      RaftNodeState ns <- get
+      case ns of
+        NodeLeaderState ls@LeaderState{..} -> do
+          eentries <- lift (readLogEntriesFrom idx)
+          case eentries of
+            Left err -> throw err
+            Right (entries :: Entries v) ->  do
+              let committedClientReqs = clientReqData entries
+              when (Map.size committedClientReqs > 0) $ do
+                mapM_ respondClientWrite (Map.toList committedClientReqs)
+                let creqMap = Map.map (second Just) committedClientReqs
+                put $ RaftNodeState $ NodeLeaderState
+                  ls { lsClientReqCache = creqMap `Map.union` lsClientReqCache }
+        _ -> panic "Only the leader should update the client request cache..."
   where
+    respondClientWrite :: (ClientId, (SerialNum, Index)) -> RaftT v m ()
+    respondClientWrite (cid, (sn,idx)) =
+      handleAction nodeConfig $
+        (RespondToClient cid (ClientWriteResponse (ClientWriteResp idx sn)) :: Action sm v)
+
     mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
     mkRPCfromSendRPCAction sendRPCAction = do
       RaftNodeState ns <- get
@@ -483,7 +505,7 @@ handleLogs logs = do
 -- | Producer for rpc message events
 rpcHandler
   :: (MonadIO m, MonadConc m, Show v, RaftRecvRPC m v)
-  => TChan (STM m) (Event v)
+  => EventChan m v
   -> RaftT v m ()
 rpcHandler eventChan =
   forever $ do
@@ -498,7 +520,7 @@ rpcHandler eventChan =
 -- | Producer for rpc message events
 clientReqHandler
   :: (MonadIO m, MonadConc m, RaftRecvClient m v)
-  => TChan (STM m) (Event v)
+  => EventChan m v
   -> RaftT v m ()
 clientReqHandler eventChan =
   forever $ do
@@ -511,15 +533,17 @@ clientReqHandler eventChan =
         atomically $ writeTChan eventChan clientReqEvent
 
 -- | Producer for the election timeout event
-electionTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v) -> m ()
+electionTimeoutTimer :: (MonadIO m, MonadConc m) => Timer m -> EventChan m v -> m ()
 electionTimeoutTimer timer eventChan =
   forever $ do
     startTimer timer >> waitTimer timer
-    atomically $ writeTChan eventChan (TimeoutEvent ElectionTimeout)
+    now <- liftIO getSystemTime
+    atomically $ writeTChan eventChan (TimeoutEvent now ElectionTimeout)
 
 -- | Producer for the heartbeat timeout event
-heartbeatTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v) -> m ()
+heartbeatTimeoutTimer :: (MonadIO m, MonadConc m) => Timer m -> EventChan m v -> m ()
 heartbeatTimeoutTimer timer eventChan =
   forever $ do
     startTimer timer >> waitTimer timer
-    atomically $ writeTChan eventChan (TimeoutEvent HeartbeatTimeout)
+    now <- liftIO getSystemTime
+    atomically $ writeTChan eventChan (TimeoutEvent now HeartbeatTimeout)

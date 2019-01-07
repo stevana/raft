@@ -23,6 +23,7 @@ import Raft.Monad
 import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC
+import Raft.Types
 import Raft.Logging (LogMsg)
 
 -- | Main entry point for handling events
@@ -76,6 +77,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               , fsLastApplied = csLastApplied cs
               , fsLastLogEntry = csLastLogEntry cs
               , fsTermAtAEPrevIndex = Nothing
+              , fsClientReqCache = csClientReqCache cs
               }
         NodeLeaderState ls ->
           ResultState HigherTermFoundLeader $
@@ -85,6 +87,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               , fsLastApplied = lsLastApplied ls
               , fsLastLogEntry = lsLastLogEntry ls
               , fsTermAtAEPrevIndex = Nothing
+              , fsClientReqCache = lsClientReqCache ls
               }
 
 
@@ -150,7 +153,7 @@ handleEvent' initNodeState transitionEnv persistentState event =
             RPCMessageEvent rpcMsg -> handleRPCMessage rpcMsg
             ClientRequestEvent cr -> do
               handleClientRequest initNodeState cr
-        TimeoutEvent tout -> do
+        TimeoutEvent _ tout -> do
           handleTimeout initNodeState tout
   where
     RaftHandler{..} = mkRaftHandler initNodeState

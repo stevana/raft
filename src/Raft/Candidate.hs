@@ -42,10 +42,7 @@ import Raft.Types
 
 handleAppendEntries :: RPCHandler 'Candidate sm (AppendEntries v) v
 handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sender AppendEntries {..} = do
-  currentTerm <- gets currentTerm
-  if currentTerm <= aeTerm
-    then stepDown sender aeTerm csCommitIndex csLastApplied csLastLogEntry
-    else pure $ candidateResultState Noop candidateState
+  pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Candidate sm AppendEntriesResponse v
@@ -98,7 +95,6 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
     becomeLeader :: TransitionM sm v (LeaderState v)
     becomeLeader = do
       currentTerm <- gets currentTerm
-      resetHeartbeatTimeout
       -- In order for leaders to know which entries have been replicated or not,
       -- a "no op" log entry must be created at the start of the term. See
       -- "Client ineraction", Section 8, of https://raft.github.io/raft.pdf.
@@ -110,6 +106,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
           , aedLeaderCommit = csCommitIndex
           , aedEntriesSpec = FromNewLeader noopEntry
           }
+      resetHeartbeatTimeout
       cNodeIds <- asks (configNodeIds . nodeConfig)
       let lastLogEntryIdx = entryIndex noopEntry
       pure LeaderState
@@ -122,6 +119,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
        , lsLastLogEntry = csLastLogEntry
        , lsReadReqsHandled = 0
        , lsReadRequest = mempty
+       , lsClientReqCache = csClientReqCache
        }
 
 handleTimeout :: TimeoutHandler 'Candidate sm v
@@ -130,7 +128,7 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
     HeartbeatTimeout -> pure $ candidateResultState Noop candidateState
     ElectionTimeout ->
       candidateResultState RestartElection <$>
-        startElection csCommitIndex csLastApplied csLastLogEntry
+        startElection csCommitIndex csLastApplied csLastLogEntry csClientReqCache
 
 -- | When candidates handle a client request, they respond with NoLeader, as the
 -- very reason they are candidate is because there is no leader. This is done
@@ -140,30 +138,3 @@ handleClientRequest :: ClientReqHandler 'Candidate sm v
 handleClientRequest (NodeCandidateState candidateState) (ClientRequest clientId _) = do
   redirectClientToLeader clientId NoLeader
   pure (candidateResultState Noop candidateState)
-
---------------------------------------------------------------------------------
-
-stepDown
-  :: Show v
-  => NodeId
-  -> Term
-  -> Index
-  -> Index
-  -> LastLogEntry v
-  -> TransitionM sm v (ResultState 'Candidate v)
-stepDown sender term commitIndex lastApplied lastLogEntry = do
-  send sender $
-    SendRequestVoteResponseRPC $
-      RequestVoteResponse
-        { rvrTerm = term
-        , rvrVoteGranted = True
-        }
-  resetElectionTimeout
-  pure $ ResultState DiscoverLeader $
-    NodeFollowerState FollowerState
-      { fsCurrentLeader = CurrentLeader (LeaderId sender)
-      , fsCommitIndex = commitIndex
-      , fsLastApplied = lastApplied
-      , fsLastLogEntry = lastLogEntry
-      , fsTermAtAEPrevIndex = Nothing
-      }

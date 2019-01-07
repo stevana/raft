@@ -1,6 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DataKinds #-}
@@ -56,23 +57,17 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       pure (leaderResultState Noop newLeaderState)
   | otherwise = do
       case aerReadRequest appendEntriesResp of
-        Nothing -> do
+        Nothing -> leaderResultState Noop <$> do
           let lastLogEntryIdx = lastLogEntryIndex (lsLastLogEntry ls)
               newNextIndices = Map.insert sender (lastLogEntryIdx + 1) (lsNextIndex ls)
               newMatchIndices = Map.insert sender lastLogEntryIdx (lsMatchIndex ls)
-              newLeaderState = ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
+              lsUpdatedIndices = ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
           -- Increment leader commit index if now a majority of followers have
           -- replicated an entry at a given term.
-          newestLeaderState <- incrCommitIndex newLeaderState
-          when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
-            let lastLogEntry = lsLastLogEntry newestLeaderState
-                entryIdx = lastLogEntryIndex lastLogEntry
-                entryIssuer = lastLogEntryIssuer lastLogEntry
-            case entryIssuer of
-              Nothing -> panic "No last log entry issuer"
-              Just (LeaderIssuer _) -> pure ()
-              Just (ClientIssuer cid) -> tellActions [RespondToClient cid (ClientWriteResponse (ClientWriteResp entryIdx))]
-          pure (leaderResultState Noop newestLeaderState)
+          lsUpdatedCommitIdx <- incrCommitIndex lsUpdatedIndices
+          when (lsCommitIndex lsUpdatedCommitIdx > lsCommitIndex lsUpdatedIndices) $
+            updateClientReqCacheFromIdx (lsCommitIndex lsUpdatedIndices)
+          pure lsUpdatedCommitIdx
         Just n -> handleReadReq n ls
   where
     handleReadReq :: Int -> LeaderState v -> TransitionM sm v (ResultState 'Leader v)
@@ -130,24 +125,49 @@ handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) 
         let newLeaderState =
               ls { lsReadRequest = Map.insert lsReadReqsHandled (cid, 1) lsReadRequest
                  }
-        pure (leaderResultState Noop newLeaderState)
-      ClientWriteReq v -> do
-        newLogEntry <- mkNewLogEntry v
-        appendLogEntries (Empty Seq.|> newLogEntry)
-        aeData <- mkAppendEntriesData ls (FromClientWriteReq newLogEntry)
-        broadcast (SendAppendEntriesRPC aeData)
-        pure (leaderResultState Noop ls)
+        pure (leaderResultState HandleClientReq newLeaderState)
+      ClientWriteReq newSerial v ->
+        leaderResultState HandleClientReq <$> handleClientWriteReq newSerial v
   where
-    mkNewLogEntry v = do
+    mkNewLogEntry v sn = do
       currentTerm <- currentTerm <$> get
       let lastLogEntryIdx = lastLogEntryIndex lsLastLogEntry
       pure $ Entry
         { entryIndex = succ lastLogEntryIdx
         , entryTerm = currentTerm
         , entryValue = EntryValue v
-        , entryIssuer = ClientIssuer cid
+        , entryIssuer = ClientIssuer cid sn
         , entryPrevHash = hashLastLogEntry lsLastLogEntry
         }
+
+    handleClientWriteReq newSerial v =
+      case Map.lookup cid lsClientReqCache of
+        -- This is important case #1
+        Nothing -> do
+          let lsClientReqCache' = Map.insert cid (newSerial, Nothing) lsClientReqCache
+          handleNewEntry
+          pure ls { lsClientReqCache = lsClientReqCache' }
+        Just (currSerial, mResp)
+          | newSerial < currSerial -> do
+              let debugMsg s1 s2 = "Ignoring serial number " <> s1 <> ", current serial is " <> s2
+              logDebug $ debugMsg (show newSerial) (show currSerial)
+              pure ls
+          | currSerial == newSerial -> do
+              case mResp of
+                Nothing -> logDebug $ "Serial " <> show currSerial <> " already exists. Ignoring repeat request."
+                Just idx -> respondClientWrite cid idx newSerial
+              pure ls
+          -- This is important case #2, where newSerial > currSerial
+          | otherwise -> do
+              let lsClientReqCache' = Map.insert cid (newSerial, Nothing) lsClientReqCache
+              handleNewEntry
+              pure ls { lsClientReqCache = lsClientReqCache' }
+      where
+        handleNewEntry = do
+          newLogEntry <- mkNewLogEntry v newSerial
+          appendLogEntries (Empty Seq.|> newLogEntry)
+          aeData <- mkAppendEntriesData ls (FromClientWriteReq newLogEntry)
+          broadcast (SendAppendEntriesRPC aeData)
 
 --------------------------------------------------------------------------------
 

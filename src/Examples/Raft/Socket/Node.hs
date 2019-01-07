@@ -25,7 +25,6 @@ import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
-import qualified Data.Map as Map
 import qualified Data.Serialize as S
 import qualified Network.Simple.TCP as NS
 import Network.Simple.TCP
@@ -39,18 +38,16 @@ import Raft
 --------------------------------------------------------------------------------
 
 data NodeSocketEnv v = NodeSocketEnv
-  { nsSocket :: Socket
-  , nsPeers :: TVar (STM IO) (Map NodeId Socket)
-  , nsMsgQueue :: TChan (STM IO) (RPCMessage v)
+  { nsMsgQueue :: TChan (STM IO) (RPCMessage v)
   , nsClientReqQueue :: TChan (STM IO) (ClientRequest v)
   }
 
 newtype RaftSocketT v m a = RaftSocketT { unRaftSocketT :: ReaderT (NodeSocketEnv v) m a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadFail, MonadReader (NodeSocketEnv v), Alternative, MonadPlus, MonadTrans)
 
-deriving instance MonadConc m => MonadThrow (RaftSocketT v m)
-deriving instance MonadConc m => MonadCatch (RaftSocketT v m)
-deriving instance MonadConc m => MonadMask (RaftSocketT v m)
+deriving instance MonadThrow m => MonadThrow (RaftSocketT v m)
+deriving instance MonadCatch m => MonadCatch (RaftSocketT v m)
+deriving instance MonadMask m => MonadMask (RaftSocketT v m)
 deriving instance MonadConc m => MonadConc (RaftSocketT v m)
 
 --------------------
@@ -60,8 +57,12 @@ deriving instance MonadConc m => MonadConc (RaftSocketT v m)
 instance (MonadIO m, MonadConc m, S.Serialize sm) => RaftSendClient (RaftSocketT v m) sm where
   sendClient clientId@(ClientId nid) msg = do
     let (cHost, cPort) = nidToHostPort (toS nid)
-    connect cHost cPort $ \(cSock, _cSockAddr) ->
-      send cSock (S.encode msg)
+    eRes <- Control.Monad.Catch.try $
+      connect cHost cPort $ \(cSock, _cSockAddr) ->
+        send cSock (S.encode msg)
+    case eRes of
+      Left (err :: SomeException) -> putText ("Failed to send Client: " <> show err)
+      Right _ -> pure ()
 
 instance (MonadIO m, MonadConc m, S.Serialize v) => RaftRecvClient (RaftSocketT v m) v where
   type RaftRecvClientError (RaftSocketT v m) v = Text
@@ -71,20 +72,12 @@ instance (MonadIO m, MonadConc m, S.Serialize v) => RaftRecvClient (RaftSocketT 
 
 instance (MonadIO m, MonadConc m, S.Serialize v, Show v) => RaftSendRPC (RaftSocketT v m) v where
   sendRPC nid msg = do
-    tNodeSocketEnvPeers <- asks nsPeers
-    nodeSocketPeers <- liftIO $ atomically $ readTVar tNodeSocketEnvPeers
-    sockM <- liftIO $
-        case Map.lookup nid nodeSocketPeers of
-          Nothing -> handle (handleFailure tNodeSocketEnvPeers [nid] Nothing) $ do
-            (sock, _) <- connectSock host port
-            NS.send sock (S.encode $ RPCMessageEvent msg)
-            pure $ Just sock
-          Just sock -> handle (retryConnection tNodeSocketEnvPeers nid (Just sock) msg) $ do
-            NS.send sock (S.encode $ RPCMessageEvent msg)
-            pure $ Just sock
-    liftIO $ atomically $ case sockM of
-      Nothing -> pure ()
-      Just sock -> writeTVar tNodeSocketEnvPeers (Map.insert nid sock nodeSocketPeers)
+      eRes <- Control.Monad.Catch.try $
+        connect host port $ \(sock,_) -> do
+          NS.send sock (S.encode $ RPCMessageEvent msg)
+      case eRes of
+        Left (err :: SomeException) -> putText ("Failed to send RPC: " <> show err)
+        Right _ -> pure ()
     where
       (host, port) = nidToHostPort nid
 
@@ -94,67 +87,26 @@ instance (MonadIO m, MonadConc m, Show v) => RaftRecvRPC (RaftSocketT v m) v whe
     msgQueue <- asks nsMsgQueue
     fmap Right . liftIO . atomically $ readTChan msgQueue
 
-
------------
--- Utils --
------------
-
--- | Handles connections failures by first trying to reconnect
-retryConnection
-  :: (S.Serialize v, MonadIO m, MonadConc m)
-  => TVar (STM m) (Map NodeId Socket)
-  -> NodeId
-  -> Maybe Socket
-  -> RPCMessage v
-  -> SomeException
-  -> m (Maybe Socket)
-retryConnection tNodeSocketEnvPeers nid sockM msg e =  case sockM of
-  Nothing -> pure Nothing
-  Just sock ->
-    handle (handleFailure tNodeSocketEnvPeers [nid] Nothing) $ do
-      (sock, _) <- connectSock host port
-      NS.send sock (S.encode $ RPCMessageEvent msg)
-      pure $ Just sock
-  where
-    (host, port) = nidToHostPort nid
-
-handleFailure
-  :: (MonadIO m, MonadConc m)
-  => TVar (STM m) (Map NodeId Socket)
-  -> [NodeId]
-  -> Maybe Socket
-  -> SomeException
-  -> m (Maybe Socket)
-handleFailure tNodeSocketEnvPeers nids sockM e = case sockM of
-  Nothing -> pure Nothing
-  Just sock -> do
-    nodeSocketPeers <- atomically $ readTVar tNodeSocketEnvPeers
-    closeSock sock
-    atomically $ mapM_ (\nid -> writeTVar tNodeSocketEnvPeers (Map.delete nid nodeSocketPeers)) nids
-    pure Nothing
-
-
 runRaftSocketT :: (MonadIO m, MonadConc m) => NodeSocketEnv v -> RaftSocketT v m a -> m a
 runRaftSocketT nodeSocketEnv = flip runReaderT nodeSocketEnv . unRaftSocketT
 
--- | Recursively accept a connection.
--- It keeps trying to accept connections even when a node dies
-acceptForkNode
+acceptConnections
   :: forall v m. (S.Serialize v, MonadIO m, MonadConc m)
-  => RaftSocketT v m ()
-acceptForkNode = do
+  => HostName
+  -> ServiceName
+  -> RaftSocketT v m ()
+acceptConnections host port = do
   socketEnv@NodeSocketEnv{..} <- ask
-  void $ fork $ void $ forever $ acceptFork nsSocket $ \(sock', sockAddr') ->
-    forever $ do
-      recvSockM <- recv sock' 32768
-      case recvSockM of
-        Nothing -> panic "Socket was closed on the other end"
-        Just recvSock -> case ((S.decode :: ByteString -> Either [Char] (MessageEvent v)) recvSock) of
-          Left err -> panic $ toS err
-          Right (ClientRequestEvent req@(ClientRequest cid _)) ->
-            atomically $ writeTChan nsClientReqQueue req
-          Right (RPCMessageEvent msg) ->
-            atomically $ writeTChan nsMsgQueue msg
+  serve (Host host) port $ \(sock, _) -> do
+    recvSockM <- recv sock (4 * 4096)
+    case recvSockM of
+      Nothing -> putText "Socket was closed on the other end"
+      Just recvSock -> case S.decode recvSock of
+        Left err -> putText $ "Failed to decode message: " <> toS err
+        Right (ClientRequestEvent req@(ClientRequest cid _)) ->
+          atomically $ writeTChan nsClientReqQueue req
+        Right (RPCMessageEvent msg) ->
+          atomically $ writeTChan nsMsgQueue msg
 
 newSock :: HostName -> ServiceName -> IO Socket
 newSock host port = do

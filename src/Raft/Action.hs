@@ -18,6 +18,7 @@ data Action sm v
   | AppendLogEntries (Entries v) -- ^ Append entries to the replicated log
   | RespondToClient ClientId (ClientResponse sm) -- ^ Respond to client after a client request
   | ResetTimeoutTimer Timeout -- ^ Reset a timeout timer
+  | UpdateClientReqCacheFrom Index -- ^ Update the client request cache from the given index onward
   deriving (Show)
 
 data SendRPCAction v

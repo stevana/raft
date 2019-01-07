@@ -69,6 +69,7 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
                   -- 5. If leaderCommit > commitIndex, set commitIndex =
                   -- min(leaderCommit, index of last new entry)
                   pure (True, updateFollowerState fs)
+    when success resetElectionTimeout
     send (unLeaderId aeLeaderId) $
       SendAppendEntriesResponseRPC $
         AppendEntriesResponse
@@ -76,7 +77,6 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
           , aerSuccess = success
           , aerReadRequest = aeReadRequest
           }
-    resetElectionTimeout
     pure (followerResultState Noop newFollowerState)
   where
     updateFollowerState :: FollowerState v -> FollowerState v
@@ -89,9 +89,6 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
     updateCommitIndex followerState =
       case aeEntries of
         Empty ->
-          -- TODO move to action, as this should update to _true_ last log entry
-          -- that follower has written to disk, not supposed commit index
-          -- assuming leader has replicated all logs to this follower
           followerState { fsCommitIndex = aeLeaderCommit }
         _ :|> e ->
           let newCommitIndex = min aeLeaderCommit (entryIndex e)
@@ -109,16 +106,16 @@ handleRequestVote :: RPCHandler 'Follower sm RequestVote v
 handleRequestVote ns@(NodeFollowerState fs) sender RequestVote{..} = do
     PersistentState{..} <- get
     let voteGranted = giveVote currentTerm votedFor
-    logDebug $ "Vote granted: " <> show voteGranted
+    when voteGranted $ do
+      modify $ \pstate ->
+        pstate { votedFor = Just sender }
+      resetElectionTimeout
     send sender $
       SendRequestVoteResponseRPC $
         RequestVoteResponse
           { rvrTerm = currentTerm
           , rvrVoteGranted = voteGranted
           }
-    when voteGranted $
-      modify $ \pstate ->
-        pstate { votedFor = Just sender }
     pure $ followerResultState Noop fs
   where
     giveVote term mVotedFor =
@@ -149,7 +146,7 @@ handleTimeout ns@(NodeFollowerState fs) timeout =
     ElectionTimeout -> do
       logDebug "Follower times out. Starts election. Becomes candidate"
       candidateResultState StartElection <$>
-        startElection (fsCommitIndex fs) (fsLastApplied fs) (fsLastLogEntry fs)
+        startElection (fsCommitIndex fs) (fsLastApplied fs) (fsLastLogEntry fs) (fsClientReqCache fs)
     -- Follower should ignore heartbeat timeout events
     HeartbeatTimeout -> pure (followerResultState Noop fs)
 

@@ -13,6 +13,7 @@ import qualified Data.Serialize as S
 import Data.Sequence (Seq(..))
 
 import Raft.Log
+import Raft.Client (SerialNum)
 import Raft.Types
 
 data Mode
@@ -31,6 +32,7 @@ data Transition (init :: Mode) (res :: Mode) where
   HigherTermFoundCandidate :: Transition 'Candidate 'Follower
   BecomeLeader             :: Transition 'Candidate 'Leader
 
+  HandleClientReq          :: Transition 'Leader 'Leader
   SendHeartbeat            :: Transition 'Leader 'Leader
   DiscoverNewLeader        :: Transition 'Leader 'Follower
   HigherTermFoundLeader    :: Transition 'Leader 'Follower
@@ -95,6 +97,7 @@ initRaftNodeState =
       , fsCurrentLeader = NoLeader
       , fsLastLogEntry = NoLogEntries
       , fsTermAtAEPrevIndex = Nothing
+      , fsClientReqCache = mempty
       }
 
 -- | The volatile state of a Raft Node
@@ -104,15 +107,6 @@ data NodeState (a :: Mode) v where
   NodeLeaderState :: LeaderState v -> NodeState 'Leader v
 
 deriving instance Show v => Show (NodeState s v)
-
--- | Representation of the current leader in the cluster. The system is
--- considered to be unavailable if there is no leader
-data CurrentLeader
-  = CurrentLeader LeaderId
-  | NoLeader
-  deriving (Show, Eq, Generic)
-
-instance S.Serialize CurrentLeader
 
 data LastLogEntry v
   = LastLogEntry (Entry v)
@@ -153,6 +147,9 @@ data FollowerState v = FollowerState
     -- ^ Index and term of the last log entry in the node's log
   , fsTermAtAEPrevIndex :: Maybe Term
     -- ^ The term of the log entry specified in and AppendEntriesRPC
+  , fsClientReqCache :: ClientWriteReqCache
+    -- ^ The client write request cache, growing linearly with the number of
+    -- clients
   } deriving (Show)
 
 data CandidateState v = CandidateState
@@ -164,9 +161,19 @@ data CandidateState v = CandidateState
     -- ^ Votes from other nodes in the raft network
   , csLastLogEntry :: LastLogEntry v
     -- ^ Index and term of the last log entry in the node's log
+  , csClientReqCache :: ClientWriteReqCache
+    -- ^ The client write request cache, growing linearly with the number of
+    -- clients
   } deriving (Show)
 
+-- | The type mapping the number of the read request serviced to the id of the
+-- client that issued it and the number of success responses from followers
+-- confirming the leadership of the current leader
 type ClientReadReqs = Map Int (ClientId, Int)
+
+-- | The type mapping client ids to the serial number of their latest write
+-- requests and the index of the entry if it has been replicated.
+type ClientWriteReqCache = Map ClientId (SerialNum, Maybe Index)
 
 data LeaderState v = LeaderState
   { lsCommitIndex :: Index
@@ -185,6 +192,8 @@ data LeaderState v = LeaderState
   , lsReadRequest :: ClientReadReqs
     -- ^ The number of successful responses received regarding a specific read
     -- request heartbeat.
+  , lsClientReqCache :: ClientWriteReqCache
+    -- ^ The cache of client write requests received by the leader
   } deriving (Show)
 
 --------------------------------------------------------------------------------

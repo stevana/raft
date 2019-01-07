@@ -15,6 +15,7 @@ import Control.Monad.Trans.Class (MonadTrans)
 import Control.Monad.State (modify')
 
 import Data.Time
+import Data.Time.Clock.System
 
 import Raft.NodeState
 import Raft.Types
@@ -33,7 +34,7 @@ data Severity
   deriving (Show)
 
 data LogMsg = LogMsg
-  { mTime :: Maybe UTCTime
+  { mTime :: Maybe SystemTime
   , severity :: Severity
   , logMsgData :: LogMsgData
   }
@@ -48,8 +49,10 @@ logMsgToText :: LogMsg -> Text
 logMsgToText (LogMsg mt s d) =
     maybe "" timeToText mt <> "(" <> show s <> ")" <> " " <> logMsgDataToText d
   where
-    timeToText :: UTCTime -> Text
-    timeToText t = "[" <> toS (timeToText' t) <> "]"
+    timeToText :: SystemTime -> Text
+    timeToText sysTime = "[" <> toS (timeToText' (systemToUTCTime sysTime)) <> ":" <> show ms <> "]"
+      where
+        ms = (systemNanoseconds sysTime) `div` 1000000
 
     timeToText' = formatTime defaultTimeLocale (iso8601DateFormat (Just "%H:%M:%S"))
 
@@ -89,8 +92,8 @@ logToFile fp = logToDest (LogFile fp)
 logWithSeverityIO :: forall m v. (RaftLogger v m, MonadIO m) => Severity -> LogDest -> Text -> m ()
 logWithSeverityIO s logDest msg = do
   logMsgData <- mkLogMsgData msg
-  now <- liftIO getCurrentTime
-  let logMsg = LogMsg (Just now) s logMsgData
+  sysTime <- liftIO getSystemTime
+  let logMsg = LogMsg (Just sysTime) s logMsgData
   logToDest logDest logMsg
 
 logInfoIO :: (RaftLogger v m, MonadIO m) => LogDest -> Text -> m ()

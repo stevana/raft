@@ -10,10 +10,12 @@ import qualified Data.Serialize as S
 import Raft.Client
 import Raft.RPC
 
+import Data.Time.Clock.System
+
 -- | Representation of events a raft node can send and receive
 data Event v
   = MessageEvent (MessageEvent v)
-  | TimeoutEvent Timeout
+  | TimeoutEvent SystemTime Timeout
   deriving (Show)
 
 -- | Representation of timeouts
@@ -31,5 +33,3 @@ data MessageEvent v
   deriving (Show, Generic)
 
 instance S.Serialize v => S.Serialize (MessageEvent v)
-
-

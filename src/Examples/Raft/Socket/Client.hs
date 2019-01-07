@@ -2,16 +2,26 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Examples.Raft.Socket.Client where
 
-import Protolude
+import Protolude hiding (STM, atomically, try, ThreadId, newTChan)
 
-import Control.Concurrent.Classy
+import Control.Concurrent.Classy hiding (catch)
+import Control.Monad.Base
+import Control.Monad.Catch
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Control
+
 import qualified Data.Serialize as S
 import qualified Network.Simple.TCP as N
-import qualified Data.Set as Set
-import qualified Data.List as L
 import System.Random
 
 import Raft.Client
@@ -19,61 +29,113 @@ import Raft.Event
 import Raft.Types
 import Examples.Raft.Socket.Common
 
-data ClientSocketEnv
-  = ClientSocketEnv { clientPort :: N.ServiceName
-                    , clientHost :: N.HostName
-                    , clientSocket :: N.Socket
-                    } deriving (Show)
+import System.Timeout.Lifted (timeout)
+import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
 
-newtype RaftSocketClientM a
-  = RaftSocketClientM { unRaftSocketClientM :: ReaderT ClientSocketEnv IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader ClientSocketEnv, Alternative, MonadPlus)
+newtype ClientRespChan s
+  = ClientRespChan { clientRespChan :: TChan (STM IO) (ClientResponse s) }
 
-runRaftSocketClientM :: ClientSocketEnv -> RaftSocketClientM a -> IO a
-runRaftSocketClientM socketEnv = flip runReaderT socketEnv . unRaftSocketClientM
+newClientRespChan :: IO (ClientRespChan s)
+newClientRespChan = ClientRespChan <$> atomically newTChan
 
--- | Randomly select a node from a set of nodes a send a message to it
-selectRndNode :: NodeIds -> IO NodeId
-selectRndNode nids =
-  (Set.toList nids L.!!) <$> randomRIO (0, length nids - 1)
+newtype RaftClientRespChanT s m a
+  = RaftClientRespChanT { unRaftClientRespChanT :: ReaderT (ClientRespChan s) m a }
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader (ClientRespChan s), Alternative, MonadPlus)
 
--- | Randomly read the state of a random node
-sendReadRndNode :: (S.Serialize sm, S.Serialize v) => Proxy v -> NodeIds -> RaftSocketClientM (Either [Char] (ClientResponse sm))
-sendReadRndNode proxyV nids =
-  liftIO (selectRndNode nids) >>= sendRead proxyV
+instance MonadTrans (RaftClientRespChanT s) where
+  lift = RaftClientRespChanT . lift
 
--- | Randomly write to a random node
-sendWriteRndNode :: (S.Serialize v, S.Serialize sm) => v -> NodeIds -> RaftSocketClientM (Either [Char] (ClientResponse sm))
-sendWriteRndNode cmd nids =
-  liftIO (selectRndNode nids) >>= sendWrite cmd
+deriving instance MonadBase IO m => MonadBase IO (RaftClientRespChanT s m)
 
--- | Request the state of a node. It blocks until the node responds
-sendRead :: forall v sm. (S.Serialize sm, S.Serialize v) => Proxy v -> NodeId -> RaftSocketClientM (Either [Char] (ClientResponse sm))
-sendRead _  nid = do
-  socketEnv@ClientSocketEnv{..} <- ask
-  let (host, port) = nidToHostPort nid
-      clientId = ClientId (hostPortToNid (clientHost, clientPort))
-  liftIO $ fork $ N.connect host port $ \(sock, sockAddr) -> N.send sock
-    (S.encode (ClientRequestEvent (ClientRequest clientId ClientReadReq :: ClientRequest v)))
-  acceptClientConnections
+instance MonadTransControl (RaftClientRespChanT s) where
+    type StT (RaftClientRespChanT s) a = StT (ReaderT (ClientRespChan s)) a
+    liftWith = defaultLiftWith RaftClientRespChanT unRaftClientRespChanT
+    restoreT = defaultRestoreT RaftClientRespChanT
 
--- | Write to a node. It blocks until the node responds
-sendWrite :: (S.Serialize v, S.Serialize sm) => v -> NodeId -> RaftSocketClientM (Either [Char] (ClientResponse sm))
-sendWrite cmd nid = do
-  socketEnv@ClientSocketEnv{..} <- ask
-  let (host, port) = nidToHostPort nid
-      clientId = ClientId (hostPortToNid (clientHost, clientPort))
-  liftIO $ fork $ N.connect host port $ \(sock, sockAddr) -> N.send sock
-    (S.encode (ClientRequestEvent (ClientRequest clientId (ClientWriteReq cmd))))
-  acceptClientConnections
+instance MonadBaseControl IO m => MonadBaseControl IO (RaftClientRespChanT s m) where
+    type StM (RaftClientRespChanT s m) a = ComposeSt (RaftClientRespChanT s) m a
+    liftBaseWith = defaultLiftBaseWith
+    restoreM     = defaultRestoreM
 
--- | Accept a connection and return the client response synchronously
-acceptClientConnections :: S.Serialize sm => RaftSocketClientM (Either [Char] (ClientResponse sm))
-acceptClientConnections = do
-  socketEnv@ClientSocketEnv{..} <- ask
-  liftIO $ N.accept clientSocket $ \(sock', sockAddr') -> do
-    recvSockM <- N.recv sock' 32768
-    case recvSockM of
-      Nothing -> pure $ Left "Received empty data from socket"
-      Just recvSock -> pure (S.decode recvSock)
+deriving instance MonadSTM m => MonadSTM (RaftClientRespChanT s m)
+deriving instance MonadThrow m => MonadThrow (RaftClientRespChanT s m)
+deriving instance MonadCatch m => MonadCatch (RaftClientRespChanT s m)
+deriving instance MonadMask m => MonadMask (RaftClientRespChanT s m)
+deriving instance MonadConc m => MonadConc (RaftClientRespChanT s m)
 
+-- This annoying instance is because of the Haskeline library, letting us use a
+-- custom monad transformer stack as the base monad of 'InputT'. IMO it should
+-- be automatically derivable. Why does haskeline use a custom exception
+-- monad... ?
+instance MonadException m => MonadException (RaftClientRespChanT s m) where
+  controlIO f =
+    RaftClientRespChanT $ ReaderT $ \r ->
+      controlIO $ \(RunIO run) ->
+        let run' = RunIO (fmap (RaftClientRespChanT . ReaderT . const) . run . flip runReaderT r . unRaftClientRespChanT)
+         in fmap (flip runReaderT r . unRaftClientRespChanT) $ f run'
+
+instance (S.Serialize v, MonadIO m) => RaftClientSend (RaftClientRespChanT s m) v where
+  type RaftClientSendError (RaftClientRespChanT s m) v = Text
+  raftClientSend nid creq = do
+    let (host,port) = nidToHostPort nid
+    mRes <-
+      liftIO $ timeout 100000 $ try $ do
+        -- Warning: blocks if socket is allocated by OS, even though the socket
+        -- may have been closed by the running process
+        N.connect host port $ \(sock, sockAddr) ->
+          N.send sock (S.encode (ClientRequestEvent creq))
+    let errPrefix = "Failed to send ClientWriteReq: "
+    case mRes of
+      Nothing -> pure (Left (errPrefix <> "'connect' timed out"))
+      Just (Left (err :: SomeException)) -> pure $ Left (errPrefix <> show err)
+      Just (Right _) -> pure (Right ())
+
+instance (S.Serialize s, MonadIO m) => RaftClientRecv (RaftClientRespChanT s m) s where
+  type RaftClientRecvError (RaftClientRespChanT s m) s = Text
+  raftClientRecv = do
+    respChan <- asks clientRespChan
+    fmap Right . liftIO . atomically $ readTChan respChan
+
+--------------------------------------------------------------------------------
+
+type RaftSocketClientM s v = RaftClientT s v (RaftClientRespChanT s IO)
+
+runRaftSocketClientM
+  :: ClientId
+  -> Set NodeId
+  -> (ClientRespChan s)
+  -> RaftSocketClientM s v a
+  -> IO a
+runRaftSocketClientM cid nids respChan rscm = do
+  raftClientState <- initRaftClientState <$> liftIO newStdGen
+  let raftClientEnv = RaftClientEnv cid
+  flip runReaderT respChan
+    . unRaftClientRespChanT
+    . runRaftClientT raftClientEnv raftClientState
+    $ rscm
+
+clientResponseServer
+  :: forall v m. (S.Serialize v, MonadIO m, MonadConc m)
+  => N.HostName
+  -> N.ServiceName
+  -> RaftClientRespChanT v m ()
+clientResponseServer host port = do
+  respChan <- asks clientRespChan
+  N.serve (N.Host host) port $ \(sock, _) -> do
+    mBytes <- N.recv sock (4 * 4096)
+    case mBytes of
+      Nothing -> putText "Socket was closed on the other end"
+      Just bytes -> case S.decode bytes of
+        Left err -> putText $ "Failed to decode message: " <> toS err
+        Right cresp -> atomically $ writeTChan respChan cresp
+
+socketClientRead
+  :: (S.Serialize s, S.Serialize v, Show s, Show (RaftClientError s v (RaftSocketClientM s v)))
+  => RaftSocketClientM s v (Either Text (ClientReadResp s))
+socketClientRead = first show <$> retryOnRedirect (clientReadTimeout 1000000)
+
+socketClientWrite
+  :: (S.Serialize s, S.Serialize v, Show s, Show (RaftClientError s v (RaftSocketClientM s v)))
+  => v
+  -> RaftSocketClientM s v (Either Text ClientWriteResp)
+socketClientWrite v = first show <$> retryOnRedirect (clientWriteTimeout 1000000 v)

@@ -25,6 +25,8 @@ import Data.Sequence ((><))
 import qualified Data.Sequence as Seq
 import qualified Data.Serialize as S
 
+import qualified System.AtomicWrite.Writer.ByteString as AW
+
 import Raft
 
 newtype NodeEnvError = NodeEnvError Text
@@ -56,13 +58,13 @@ instance (MonadIO m, MonadConc m, S.Serialize v) => RaftWriteLog (RaftFileStoreT
     eLogEntries <- readLogEntries
     case eLogEntries of
       Left err -> panic ("writeLogEntries: " <> err)
-      Right currEntries -> liftIO $ Right <$> BS.writeFile entriesPath (S.encode (currEntries >< newEntries))
+      Right currEntries -> liftIO $ Right <$> AW.atomicWriteFile entriesPath (S.encode (currEntries >< newEntries))
 
 instance (MonadIO m, MonadConc m) => RaftPersist (RaftFileStoreT m) where
   type RaftPersistError (RaftFileStoreT m) = NodeEnvError
   writePersistentState ps = do
     psPath <- asks nfsPersistentState
-    liftIO $ Right <$> BS.writeFile psPath (S.encode ps)
+    liftIO $ Right <$> AW.atomicWriteFile psPath (S.encode ps)
 
   readPersistentState = do
     psPath <- asks nfsPersistentState
@@ -99,7 +101,7 @@ instance (MonadIO m, MonadConc m, S.Serialize v) => RaftDeleteLog (RaftFileStore
       Right (entries :: Entries v) -> do
         let newLogEntries = Seq.dropWhileR ((>= idx) . entryIndex) entries
         entriesPath <- asks nfsLogEntries
-        liftIO $ BS.writeFile entriesPath (S.encode newLogEntries)
+        liftIO $ AW.atomicWriteFile entriesPath (S.encode newLogEntries)
         pure (Right DeleteSuccess)
 
 readLogEntries :: (MonadIO m, S.Serialize v) => RaftFileStoreT m (Either Text (Entries v))

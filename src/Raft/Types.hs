@@ -28,6 +28,15 @@ newtype ClientId = ClientId NodeId
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
   deriving (Show, Eq, Generic, Serialize)
 
+-- | Representation of the current leader in the cluster. The system is
+-- considered to be unavailable if there is no leader
+data CurrentLeader
+  = CurrentLeader LeaderId
+  | NoLeader
+  deriving (Show, Eq, Generic)
+
+instance Serialize CurrentLeader
+
 ----------
 -- Term --
 ----------

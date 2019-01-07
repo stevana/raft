@@ -7,6 +7,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module TestDejaFu where
@@ -31,11 +32,14 @@ import Test.DejaFu.Conc hiding (ThreadId)
 import Test.Tasty
 import Test.Tasty.DejaFu hiding (get)
 
-import System.Random (mkStdGen)
+import System.Random (mkStdGen, newStdGen)
 
 import TestUtils
 
 import Raft
+import Raft.Client
+
+import Data.Time.Clock.System (getSystemTime)
 
 --------------------------------------------------------------------------------
 -- Test State Machine & Commands
@@ -67,12 +71,15 @@ instance RSM Store StoreCmd RaftTestM where
   askRSMPCtx = pure StoreCtx
 
 type TestEventChan = EventChan ConcIO StoreCmd
+type TestEventChans = Map NodeId TestEventChan
+
 type TestClientRespChan = TChan (STM ConcIO) (ClientResponse Store)
+type TestClientRespChans = Map ClientId TestClientRespChan
 
 -- | Node specific environment
 data TestNodeEnv = TestNodeEnv
-  { testNodeEventChans :: Map NodeId TestEventChan
-  , testClientRespChans :: Map ClientId TestClientRespChan
+  { testNodeEventChans :: TestEventChans
+  , testClientRespChans :: TestClientRespChans
   , testNodeConfig :: NodeConfig
   }
 
@@ -195,6 +202,43 @@ instance RaftReadLog RaftTestM StoreCmd where
 
 --------------------------------------------------------------------------------
 
+data TestClientEnv = TestClientEnv
+  { testClientEnvRespChan :: TestClientRespChan
+  , testClientEnvNodeEventChans :: TestEventChans
+  }
+
+type RaftTestClientM' = ReaderT TestClientEnv ConcIO
+type RaftTestClientM = RaftClientT Store StoreCmd RaftTestClientM'
+
+instance RaftClientSend RaftTestClientM' StoreCmd where
+  type RaftClientSendError RaftTestClientM' StoreCmd = ()
+  raftClientSend nid creq = do
+    Just nodeEventChan <- asks (Map.lookup nid . testClientEnvNodeEventChans)
+    lift $ atomically $ writeTChan nodeEventChan (MessageEvent (ClientRequestEvent creq))
+    pure (Right ())
+
+instance RaftClientRecv RaftTestClientM' Store where
+  type RaftClientRecvError RaftTestClientM' Store = ()
+  raftClientRecv = do
+    clientRespChan <- asks testClientEnvRespChan
+    fmap Right $ lift $ atomically $ readTChan clientRespChan
+
+runRaftTestClientM
+  :: ClientId
+  -> TestClientRespChan
+  -> TestEventChans
+  -> RaftTestClientM a
+  -> ConcIO a
+runRaftTestClientM cid chan chans rtcm = do
+  raftClientState <- initRaftClientState <$> liftIO newStdGen
+  let raftClientEnv = RaftClientEnv cid
+      testClientEnv = TestClientEnv chan chans
+   in flip runReaderT testClientEnv
+    . runRaftClientT raftClientEnv raftClientState { raftClientRaftNodes = Map.keysSet chans }
+    $ rtcm
+
+--------------------------------------------------------------------------------
+
 initTestChanMaps :: ConcIO (Map NodeId TestEventChan, Map ClientId TestClientRespChan)
 initTestChanMaps = do
   eventChans <-
@@ -231,9 +275,6 @@ forkTestNodes testEnvs testStates =
   mapM (fork . flip runTestNode testStates) testEnvs
 
 --------------------------------------------------------------------------------
-
-type TestEventChans = Map NodeId TestEventChan
-type TestClientRespChans = Map ClientId TestClientRespChan
 
 test_concurrency :: [TestTree]
 test_concurrency =
@@ -279,46 +320,51 @@ testConcurrentProps test expected =
         teardown = mapM_ killThread . fst
 
 leaderElection :: NodeId -> TestEventChans -> TestClientRespChans -> ConcIO Store
-leaderElection nid eventChans clientRespChans = do
-    atomically $ writeTChan nodeEventChan (TimeoutEvent ElectionTimeout)
-    pollForReadResponse nodeEventChan client0RespChan
+leaderElection nid eventChans clientRespChans =
+    runRaftTestClientM client0 client0RespChan eventChans $
+      leaderElection' nid eventChans
+  where
+     Just client0RespChan = Map.lookup client0 clientRespChans
+
+leaderElection' :: NodeId -> TestEventChans -> RaftTestClientM Store
+leaderElection' nid eventChans = do
+    sysTime <- liftIO getSystemTime
+    lift $ lift $ atomically $ writeTChan nodeEventChan (TimeoutEvent sysTime ElectionTimeout)
+    pollForReadResponse nid
   where
     Just nodeEventChan = Map.lookup nid eventChans
-    Just client0RespChan = Map.lookup client0 clientRespChans
 
 incrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
 incrValue eventChans clientRespChans = do
     leaderElection node0 eventChans clientRespChans
-    Right idx <- do
-      syncClientWrite node0EventChan (client0, client0RespChan) (Set "x" 41)
-      syncClientWrite node0EventChan (client0, client0RespChan) (Incr"x")
-    store <- pollForReadResponse node0EventChan client0RespChan
-    pure (store, idx)
+    runRaftTestClientM client0 client0RespChan eventChans $ do
+      Right idx <- do
+        syncClientWrite node0 (Set "x" 41)
+        syncClientWrite node0 (Incr"x")
+      store <- pollForReadResponse node0
+      pure (store, idx)
   where
-    Just node0EventChan = Map.lookup node0 eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
 
 multIncrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
 multIncrValue eventChans clientRespChans = do
-    leaderElection node0 eventChans clientRespChans
-    syncClientWrite node0EventChan (client0, client0RespChan) (Set "x" 0)
+  leaderElection node0 eventChans clientRespChans
+  runRaftTestClientM client0 client0RespChan eventChans $ do
+    syncClientWrite node0 (Set "x" 0)
     Right idx <-
-      fmap (Maybe.fromJust . lastMay) $ replicateM 10 $ do
-        res <- syncClientWrite node0EventChan (client0, client0RespChan) (Incr "x")
-        pollForReadResponse node0EventChan client0RespChan
-        pure res
-    store <- pollForReadResponse node0EventChan client0RespChan
+      fmap (Maybe.fromJust . lastMay) $
+        replicateM 10 $ syncClientWrite node0 (Incr "x")
+    store <- pollForReadResponse node0
     pure (store, idx)
   where
-    Just node0EventChan = Map.lookup node0 eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
 
 leaderRedirect :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
-leaderRedirect eventChans clientRespChans = do
-    Left resp <- syncClientWrite node1EventChan (client0, client0RespChan) (Set "x" 42)
+leaderRedirect eventChans clientRespChans =
+  runRaftTestClientM client0 client0RespChan eventChans $ do
+    Left resp <- syncClientWrite node1 (Set "x" 42)
     pure resp
   where
-    Just node1EventChan = Map.lookup node1 eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
 
 followerRedirNoLeader :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
@@ -335,96 +381,97 @@ newLeaderElection eventChans clientRespChans = do
     leaderElection node1 eventChans clientRespChans
     leaderElection node2 eventChans clientRespChans
     leaderElection node1 eventChans clientRespChans
-    atomically $ writeTChan node0EventChan $ clientReadReq client0
-    ClientRedirectResponse (ClientRedirResp ldr) <- atomically $ readTChan client0RespChan
-    pure ldr
+    runRaftTestClientM client0 client0RespChan eventChans $ do
+      Left ldr <- syncClientRead node0
+      pure ldr
   where
-    Just node0EventChan = Map.lookup node0 eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
 
 comprehensive :: TestEventChans -> TestClientRespChans -> ConcIO (Index, Store, CurrentLeader)
-comprehensive eventChans clientRespChans = do
-    leaderElection node0 eventChans clientRespChans
-    Right idx2 <- syncClientWriteClient0 node0EventChan (Set "x" 7)
-    Right idx3 <- syncClientWriteClient0 node0EventChan (Set "y" 3)
-    Left (CurrentLeader _) <- syncClientWriteClient0 node1EventChan (Incr "y")
-    Right _ <- syncClientRead node0EventChan (client0, client0RespChan)
+comprehensive eventChans clientRespChans =
+  runRaftTestClientM client0 client0RespChan eventChans $ do
+    leaderElection'' node0
+    Right idx2 <- syncClientWrite node0 (Set "x" 7)
+    Right idx3 <- syncClientWrite node0 (Set "y" 3)
+    Left (CurrentLeader _) <- syncClientWrite node1 (Incr "y")
+    Right _ <- syncClientRead node0
 
-    leaderElection node1 eventChans clientRespChans
-    Right idx5 <- syncClientWriteClient0 node1EventChan (Incr "x")
-    Right idx6 <- syncClientWriteClient0 node1EventChan (Incr "y")
-    Right idx7 <- syncClientWriteClient0 node1EventChan (Set "z" 40)
-    Left (CurrentLeader _) <- syncClientWriteClient0 node2EventChan (Incr "y")
-    Right _ <- syncClientRead node1EventChan (client0, client0RespChan)
+    leaderElection'' node1
+    Right idx5 <- syncClientWrite node1 (Incr "x")
+    Right idx6 <- syncClientWrite node1 (Incr "y")
+    Right idx7 <- syncClientWrite node1 (Set "z" 40)
+    Left (CurrentLeader _) <- syncClientWrite node2 (Incr "y")
+    Right _ <- syncClientRead node1
 
-    leaderElection node2 eventChans clientRespChans
-    Right idx9 <- syncClientWriteClient0 node2EventChan (Incr "z")
-    Right idx10 <- syncClientWriteClient0 node2EventChan (Incr "x")
-    Left _ <- syncClientWriteClient0 node1EventChan (Set "q" 100)
-    Right idx11 <- syncClientWriteClient0 node2EventChan (Incr "y")
-    Left _ <- syncClientWriteClient0 node0EventChan (Incr "z")
-    Right idx12 <- syncClientWriteClient0 node2EventChan (Incr "y")
-    Left (CurrentLeader _) <- syncClientWriteClient0 node0EventChan (Incr "y")
-    Right _ <- syncClientRead node2EventChan (client0, client0RespChan)
+    leaderElection'' node2
+    Right idx9 <- syncClientWrite node2 (Incr "z")
+    Right idx10 <- syncClientWrite node2 (Incr "x")
+    Left _ <- syncClientWrite node1 (Set "q" 100)
+    Right idx11 <- syncClientWrite node2 (Incr "y")
+    Left _ <- syncClientWrite node0 (Incr "z")
+    Right idx12 <- syncClientWrite node2 (Incr "y")
+    Left (CurrentLeader _) <- syncClientWrite node0 (Incr "y")
+    Right _ <- syncClientRead node2
 
-    leaderElection node0 eventChans clientRespChans
-    Right idx14 <- syncClientWriteClient0 node0EventChan (Incr "z")
-    Left (CurrentLeader _) <- syncClientWriteClient0 node1EventChan (Incr "y")
+    leaderElection'' node0
+    Right idx14 <- syncClientWrite node0 (Incr "z")
+    Left (CurrentLeader _) <- syncClientWrite node1 (Incr "y")
 
-    Right store <- syncClientRead node0EventChan (client0, client0RespChan)
-    Left ldr <- syncClientRead node1EventChan (client0, client0RespChan)
+    Right store <- syncClientRead node0
+    Left ldr <- syncClientRead node1
 
     pure (idx14, store, ldr)
   where
-    syncClientWriteClient0 = flip syncClientWrite (client0, client0RespChan)
-
-    Just node0EventChan = Map.lookup node0 eventChans
-    Just node1EventChan = Map.lookup node1 eventChans
-    Just node2EventChan = Map.lookup node2 eventChans
-
+    leaderElection'' nid = leaderElection' nid eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
 
 --------------------------------------------------------------------------------
 -- Helpers
 --------------------------------------------------------------------------------
 
-pollForReadResponse :: TestEventChan -> TestClientRespChan -> ConcIO Store
-pollForReadResponse nodeEventChan clientRespChan = do
-  -- Warning: Do not change the separate "atomically" calls, or you may
-  -- introduce a deadlock
-  atomically $ writeTChan nodeEventChan $ clientReadReq client0
-  res <- atomically $ readTChan clientRespChan
-  case res of
-    ClientReadResponse (ClientReadResp res) -> pure res
+-- | This function can be safely "run" without worry about impacting the client
+-- SerialNum of the client requests.
+-- Warning: If read requests start to include serial numbers, this function will
+-- no longer be safe to `runRaftTestClientM` on.
+pollForReadResponse :: NodeId -> RaftTestClientM Store
+pollForReadResponse nid = do
+  eRes <- clientReadFrom nid
+  case eRes of
+    Right (ClientReadResp res) -> pure res
     _ -> do
-      liftIO $ Control.Monad.Conc.Class.threadDelay 1000
-      pollForReadResponse nodeEventChan clientRespChan
+      liftIO $ Control.Monad.Conc.Class.threadDelay 10000
+      pollForReadResponse nid
 
-syncClientRead :: TestEventChan -> (ClientId, TestClientRespChan) -> ConcIO (Either CurrentLeader Store)
-syncClientRead nodeEventChan (cid, clientRespChan) = do
-  atomically $ writeTChan nodeEventChan $ clientReadReq client0
-  res <- atomically $ readTChan clientRespChan
-  case res of
-    ClientReadResponse (ClientReadResp store) -> pure $ Right store
-    ClientRedirectResponse (ClientRedirResp ldr) -> pure $ Left ldr
+syncClientRead :: NodeId -> RaftTestClientM (Either CurrentLeader Store)
+syncClientRead nid = do
+  eRes <- clientReadFrom nid
+  case eRes of
+    Right (ClientReadResp store) -> pure $ Right store
+    Left (RaftClientUnexpectedRedirect (ClientRedirResp ldr)) -> pure $ Left ldr
     _ -> panic "Failed to recieve valid read response"
 
-syncClientWrite :: TestEventChan -> (ClientId, TestClientRespChan) -> StoreCmd -> ConcIO (Either CurrentLeader Index)
-syncClientWrite nodeEventChan (cid, clientRespChan) cmd = do
-  atomically $ writeTChan nodeEventChan (clientWriteReq cid cmd)
-  res <- atomically $ readTChan clientRespChan
-  case res of
-    ClientWriteResponse (ClientWriteResp idx) -> do
-      heartbeat nodeEventChan
+syncClientWrite
+  :: NodeId
+  -> StoreCmd
+  -> RaftTestClientM (Either CurrentLeader Index)
+syncClientWrite nid cmd = do
+  eRes <- clientWriteTo nid cmd
+  case eRes of
+    Right (ClientWriteResp idx sn) -> do
+      Just nodeEventChan <- lift (asks (Map.lookup nid . testClientEnvNodeEventChans))
       pure $ Right idx
-    ClientRedirectResponse (ClientRedirResp ldr) -> pure $ Left ldr
+    Left (RaftClientUnexpectedRedirect (ClientRedirResp ldr)) -> pure $ Left ldr
     _ -> panic "Failed to receive client write response..."
 
 heartbeat :: TestEventChan -> ConcIO ()
-heartbeat eventChan = atomically $ writeTChan eventChan (TimeoutEvent HeartbeatTimeout)
+heartbeat eventChan = do
+  sysTime <- liftIO getSystemTime
+  atomically $ writeTChan eventChan (TimeoutEvent sysTime HeartbeatTimeout)
 
 clientReadReq :: ClientId -> Event StoreCmd
 clientReadReq cid = MessageEvent $ ClientRequestEvent $ ClientRequest cid ClientReadReq
 
-clientWriteReq :: ClientId -> StoreCmd -> Event StoreCmd
-clientWriteReq cid v = MessageEvent $ ClientRequestEvent $ ClientRequest cid $ ClientWriteReq v
+clientReadRespChan :: RaftTestClientM (ClientResponse Store)
+clientReadRespChan = do
+  clientRespChan <- lift (asks testClientEnvRespChan)
+  lift $ lift $ atomically $ readTChan clientRespChan

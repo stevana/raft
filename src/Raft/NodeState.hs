@@ -4,6 +4,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StrictData #-}
 
 module Raft.NodeState where
 
@@ -12,6 +13,7 @@ import Protolude
 import qualified Data.Serialize as S
 import Data.Sequence (Seq(..))
 
+import Raft.Client
 import Raft.Log
 import Raft.Client (SerialNum)
 import Raft.Types
@@ -166,10 +168,15 @@ data CandidateState v = CandidateState
     -- clients
   } deriving (Show)
 
+data ClientReadReqData = ClientReadReqData
+  { crrdClientId :: ClientId
+  , crrdReadReq  :: ClientReadReq
+  } deriving (Show)
+
 -- | The type mapping the number of the read request serviced to the id of the
 -- client that issued it and the number of success responses from followers
 -- confirming the leadership of the current leader
-type ClientReadReqs = Map Int (ClientId, Int)
+type ClientReadReqs = Map Int (ClientReadReqData, Int)
 
 -- | The type mapping client ids to the serial number of their latest write
 -- requests and the index of the entry if it has been replicated.

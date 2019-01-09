@@ -1,6 +1,8 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
@@ -22,20 +24,21 @@ type NodeIds = Set NodeId
 
 -- | Unique identifier of a client
 newtype ClientId = ClientId NodeId
-  deriving (Show, Eq, Ord, Generic, Serialize)
+  deriving stock (Show, Eq, Ord, Generic)
+  deriving newtype Serialize
 
 -- | Unique identifier of a leader
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
-  deriving (Show, Eq, Generic, Serialize)
+  deriving stock (Show, Eq, Generic)
+  deriving newtype Serialize
 
 -- | Representation of the current leader in the cluster. The system is
 -- considered to be unavailable if there is no leader
 data CurrentLeader
   = CurrentLeader LeaderId
   | NoLeader
-  deriving (Show, Eq, Generic)
-
-instance Serialize CurrentLeader
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (Serialize)
 
 ----------
 -- Term --
@@ -43,7 +46,8 @@ instance Serialize CurrentLeader
 
 -- | Representation of monotonic election terms
 newtype Term = Term Natural
-  deriving (Show, Eq, Ord, Enum, Generic, Serialize)
+  deriving stock (Generic)
+  deriving newtype (Show, Eq, Ord, Enum, Serialize)
 
 -- | Initial term. Terms start at 0
 term0 :: Term
@@ -62,7 +66,8 @@ prevTerm t = pred t
 
 -- | Representation of monotonic indices
 newtype Index = Index Natural
-  deriving (Show, Eq, Ord, Enum, Num, Integral, Real, Generic, Serialize)
+  deriving stock (Show, Generic)
+  deriving newtype (Eq, Ord, Enum, Num, Integral, Real, Serialize)
 
 -- | Initial index. Indeces start at 0
 index0 :: Index
@@ -76,3 +81,11 @@ incrIndex = succ
 decrIndexWithDefault0 :: Index -> Index
 decrIndexWithDefault0 (Index 0) = index0
 decrIndexWithDefault0 i = pred i
+
+-----------------------------------
+-- Client Request Serial Numbers --
+-----------------------------------
+
+newtype SerialNum = SerialNum Natural
+  deriving stock (Show, Generic)
+  deriving newtype (Read, Eq, Ord, Enum, Num, Serialize)

@@ -66,7 +66,7 @@ data NoEntriesSpec
   | FromClientReadReq Int
   deriving (Show)
 
-data EntriesSpec v
+data AppendEntriesSpec v
   = FromIndex Index
   | FromNewLeader (Entry v)
   | FromClientWriteReq (Entry v)
@@ -78,7 +78,7 @@ data EntriesSpec v
 data AppendEntriesData v = AppendEntriesData
   { aedTerm :: Term
   , aedLeaderCommit :: Index
-  , aedEntriesSpec :: EntriesSpec v
+  , aedEntriesSpec :: AppendEntriesSpec v
   } deriving (Show)
 
 -- | Representation of a message sent from a leader to its peers

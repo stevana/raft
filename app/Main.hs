@@ -37,14 +37,15 @@ import Text.Read hiding (lift)
 import System.Random
 import qualified System.Directory as Directory
 
+import Raft
+import Raft.Log
+import Raft.Client
+
 import qualified Examples.Raft.Socket.Client as RS
 import qualified Examples.Raft.Socket.Node as RS
 import Examples.Raft.Socket.Node
 import qualified Examples.Raft.Socket.Common as RS
-
 import Examples.Raft.FileStore
-import Raft
-import Raft.Client
 
 ------------------------------
 -- State Machine & Commands --
@@ -101,7 +102,7 @@ runRaftExampleM nodeEnv nodeSocketEnv nodeFileStoreEnv raftExampleM =
       runReaderT (unRaftExampleM raftExampleM) nodeEnv) nodeSocketEnv)
         nodeFileStoreEnv
 
-instance RaftSendClient (RaftExampleM Store StoreCmd) Store where
+instance RaftSendClient (RaftExampleM Store StoreCmd) Store StoreCmd where
   sendClient cid msg = (RaftExampleM . lift) $ sendClient cid msg
 
 instance RaftRecvClient (RaftExampleM Store StoreCmd) StoreCmd where
@@ -165,7 +166,14 @@ handleConsoleCmd input = do
     ["getNodes"] -> print =<< liftRSCM clientGetNodes
     ["read"] ->
       ifNodesAdded nids $
-        handleResponse =<< liftRSCM RS.socketClientRead
+        handleResponse =<< liftRSCM (RS.socketClientRead ClientReadStateMachine)
+    ["read", n] ->
+      ifNodesAdded nids $
+        handleResponse =<< liftRSCM (RS.socketClientRead (ClientReadEntries (ByIndex (Index (read n)))))
+    ["read", "[", low, high, "]" ] ->
+      ifNodesAdded nids $ do
+        let byInterval = ByIndices $ IndexInterval (Just (Index (read low))) (Just (Index (read high)))
+        handleResponse =<< liftRSCM (RS.socketClientRead (ClientReadEntries byInterval))
     ["incr", cmd] ->
       ifNodesAdded nids $
         handleResponse =<< liftRSCM (RS.socketClientWrite (Incr (toS cmd)))

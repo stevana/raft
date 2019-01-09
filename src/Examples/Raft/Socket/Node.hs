@@ -54,7 +54,7 @@ deriving instance MonadConc m => MonadConc (RaftSocketT v m)
 -- Raft Instances --
 --------------------
 
-instance (MonadIO m, MonadConc m, S.Serialize sm) => RaftSendClient (RaftSocketT v m) sm where
+instance (MonadIO m, MonadConc m, S.Serialize sm, S.Serialize v) => RaftSendClient (RaftSocketT v m) sm v where
   sendClient clientId@(ClientId nid) msg = do
     let (cHost, cPort) = nidToHostPort (toS nid)
     eRes <- Control.Monad.Catch.try $

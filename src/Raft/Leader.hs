@@ -74,19 +74,19 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
     handleReadReq n leaderState = do
       networkSize <- Set.size <$> asks (configNodeIds . nodeConfig)
       let initReadReqs = lsReadRequest leaderState
-          (mclientId, newReadReqs) =
+          (mCreqData, newReadReqs) =
             case Map.lookup n initReadReqs of
               Nothing -> (Nothing, initReadReqs)
-              Just (cid,m)
-                | isMajority (succ m) networkSize -> (Just cid, Map.delete n initReadReqs)
+              Just (creqData, m)
+                | isMajority (succ m) networkSize -> (Just creqData, Map.delete n initReadReqs)
                 | otherwise -> (Nothing, Map.adjust (second succ) n initReadReqs)
-      case mclientId of
+      case mCreqData of
         Nothing ->
           pure $ leaderResultState Noop leaderState
             { lsReadRequest = newReadReqs
             }
-        Just cid -> do
-          respondClientRead cid
+        Just (ClientReadReqData cid res) -> do
+          respondClientRead cid res
           pure $ leaderResultState Noop leaderState
             { lsReadReqsHandled = succ (lsReadReqsHandled leaderState)
             , lsReadRequest = newReadReqs
@@ -119,11 +119,12 @@ handleTimeout (NodeLeaderState ls) timeout =
 handleClientRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader sm v
 handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) = do
     case cr of
-      ClientReadReq -> do
+      ClientReadReq crr -> do
         heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
         broadcast (SendAppendEntriesRPC heartbeat)
-        let newLeaderState =
-              ls { lsReadRequest = Map.insert lsReadReqsHandled (cid, 1) lsReadRequest
+        let clientReqData = ClientReadReqData cid crr
+            newLeaderState =
+              ls { lsReadRequest = Map.insert lsReadReqsHandled (clientReqData, 1) lsReadRequest
                  }
         pure (leaderResultState HandleClientReq newLeaderState)
       ClientWriteReq newSerial v ->
@@ -202,7 +203,7 @@ isMajority n m = n >= m `div` 2 + 1
 mkAppendEntriesData
   :: Show v
   => LeaderState v
-  -> EntriesSpec v
+  -> AppendEntriesSpec v
   -> TransitionM sm v (AppendEntriesData v)
 mkAppendEntriesData ls entriesSpec = do
   currentTerm <- gets currentTerm

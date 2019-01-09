@@ -138,17 +138,27 @@ resetHeartbeatTimeout = tellAction (ResetTimeoutTimer HeartbeatTimeout)
 
 redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM sm v ()
 redirectClientToLeader clientId currentLeader = do
-  let clientRedirResp = ClientRedirectResponse (ClientRedirResp currentLeader)
-  tellAction (RespondToClient clientId clientRedirResp)
+  let clientRedirRespSpec = ClientRedirRespSpec currentLeader
+  tellAction (RespondToClient clientId clientRedirRespSpec)
 
-respondClientRead :: ClientId -> TransitionM sm v ()
-respondClientRead clientId = do
-  clientReadResp <- ClientReadResponse . ClientReadResp <$> asks stateMachine
-  tellAction (RespondToClient clientId clientReadResp)
+respondClientRead :: ClientId -> ClientReadReq -> TransitionM sm v ()
+respondClientRead clientId readReq = do
+  readReqData <-
+    case readReq of
+      ClientReadEntries res -> pure (ClientReadRespSpecEntries res)
+      ClientReadStateMachine -> do
+        sm <- asks stateMachine
+        pure (ClientReadRespSpecStateMachine sm)
+  tellAction . RespondToClient clientId . ClientReadRespSpec $ readReqData
+
 
 respondClientWrite :: ClientId -> Index -> SerialNum -> TransitionM sm v ()
 respondClientWrite cid entryIdx sn =
-  tellActions [RespondToClient cid (ClientWriteResponse (ClientWriteResp entryIdx sn))]
+  tellAction (RespondToClient cid (ClientWriteRespSpec entryIdx sn))
+
+respondClientRedir :: ClientId -> CurrentLeader -> TransitionM sm v ()
+respondClientRedir cid cl =
+  tellAction (RespondToClient cid (ClientRedirRespSpec cl))
 
 appendLogEntries :: Show v => Seq (Entry v) -> TransitionM sm v ()
 appendLogEntries = tellAction . AppendLogEntries

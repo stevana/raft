@@ -183,13 +183,13 @@ logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogDest
 -- | Run timers, RPC and client request handlers and start event loop.
 -- It should run forever
 runRaftNode
-  :: ( Show v, Show sm, Serialize v, Show (Action sm v), Show (RaftLogError m)
+  :: ( Show v, Show sm, Serialize v, Show (Action sm v), Show (RaftLogError m), Typeable m
      , MonadIO m, MonadConc m, MonadFail m
      , RSM sm v m
      , Show (RSMPError sm v)
      , RaftSendRPC m v
      , RaftRecvRPC m v
-     , RaftSendClient m sm
+     , RaftSendClient m sm v
      , RaftRecvClient m v
      , RaftLog m v
      , RaftLogExceptions m
@@ -227,13 +227,13 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
 
 handleEventLoop
   :: forall sm v m.
-     ( Show v, Serialize v, Show sm, Show (Action sm v), Show (RaftLogError m)
+     ( Show v, Serialize v, Show sm, Show (Action sm v), Show (RaftLogError m), Typeable m
      , MonadIO m, MonadConc m, MonadFail m
      , RSM sm v m
      , Show (RSMPError sm v)
      , RaftPersist m
      , RaftSendRPC m v
-     , RaftSendClient m sm
+     , RaftSendClient m sm v
      , RaftLog m v
      , RaftLogExceptions m
      , RaftPersist m
@@ -309,11 +309,11 @@ handleEventLoop initRSM = do
           put (RaftNodeState (setLastLogEntry rns (singleton e)))
 
 handleActions
-  :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
+  :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m), Typeable m
      , MonadIO m, MonadConc m
      , RSM sm v m
      , RaftSendRPC m v
-     , RaftSendClient m sm
+     , RaftSendClient m sm v
      , RaftLog m v
      , RaftLogExceptions m
      )
@@ -324,11 +324,11 @@ handleActions = mapM_ . handleAction
 
 handleAction
   :: forall sm v m.
-     ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m)
+     ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m), Typeable m
      , MonadIO m, MonadConc m
      , RSM sm v m
      , RaftSendRPC m v
-     , RaftSendClient m sm
+     , RaftSendClient m sm v
      , RaftLog m v
      , RaftLogExceptions m
      )
@@ -348,7 +348,9 @@ handleAction nodeConfig action = do
     BroadcastRPC nids sendRpcAction -> do
       rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
       mapConcurrently_ (lift . flip sendRPC rpcMsg) nids
-    RespondToClient cid cr -> void . fork . lift $ sendClient cid cr
+    RespondToClient cid cr -> do
+      clientResp <- mkClientResp cr
+      void . fork . lift $ sendClient cid clientResp
     ResetTimeoutTimer tout -> do
       case tout of
         ElectionTimeout -> lift . resetElectionTimer =<< ask
@@ -380,7 +382,28 @@ handleAction nodeConfig action = do
     respondClientWrite :: (ClientId, (SerialNum, Index)) -> RaftT v m ()
     respondClientWrite (cid, (sn,idx)) =
       handleAction nodeConfig $
-        (RespondToClient cid (ClientWriteResponse (ClientWriteResp idx sn)) :: Action sm v)
+        RespondToClient cid (ClientWriteRespSpec idx sn :: ClientRespSpec sm)
+
+    mkClientResp :: ClientRespSpec sm -> RaftT v m (ClientResponse sm v)
+    mkClientResp crs =
+      case crs of
+        ClientReadRespSpec crrs ->
+          ClientReadResponse <$>
+            case crrs of
+              ClientReadRespSpecEntries res -> do
+                eRes <- lift (readEntries res)
+                case eRes of
+                  Left err -> throw err
+                  Right res ->
+                    case res of
+                      OneEntry e -> pure (ClientReadRespEntry e)
+                      ManyEntries es -> pure (ClientReadRespEntries es)
+              ClientReadRespSpecStateMachine sm ->
+                pure (ClientReadRespStateMachine sm)
+        ClientWriteRespSpec idx sn ->
+          pure (ClientWriteResponse (ClientWriteResp idx sn))
+        ClientRedirRespSpec cl ->
+          pure (ClientRedirectResponse (ClientRedirResp cl))
 
     mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
     mkRPCfromSendRPCAction sendRPCAction = do

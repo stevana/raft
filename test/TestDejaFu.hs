@@ -73,7 +73,7 @@ instance RSM Store StoreCmd RaftTestM where
 type TestEventChan = EventChan ConcIO StoreCmd
 type TestEventChans = Map NodeId TestEventChan
 
-type TestClientRespChan = TChan (STM ConcIO) (ClientResponse Store)
+type TestClientRespChan = TChan (STM ConcIO) (ClientResponse Store StoreCmd)
 type TestClientRespChans = Map ClientId TestClientRespChan
 
 -- | Node specific environment
@@ -157,7 +157,7 @@ instance RaftSendRPC RaftTestM StoreCmd where
     eventChan <- lookupNodeEventChan nid
     atomically $ writeTChan eventChan (MessageEvent (RPCMessageEvent rpc))
 
-instance RaftSendClient RaftTestM Store where
+instance RaftSendClient RaftTestM Store StoreCmd where
   sendClient cid cr = do
     clientRespChans <- asks testClientRespChans
     case Map.lookup cid clientRespChans of
@@ -217,7 +217,7 @@ instance RaftClientSend RaftTestClientM' StoreCmd where
     lift $ atomically $ writeTChan nodeEventChan (MessageEvent (ClientRequestEvent creq))
     pure (Right ())
 
-instance RaftClientRecv RaftTestClientM' Store where
+instance RaftClientRecv RaftTestClientM' Store StoreCmd where
   type RaftClientRecvError RaftTestClientM' Store = ()
   raftClientRecv = do
     clientRespChan <- asks testClientEnvRespChan
@@ -431,22 +431,25 @@ comprehensive eventChans clientRespChans =
 
 -- | This function can be safely "run" without worry about impacting the client
 -- SerialNum of the client requests.
+--
 -- Warning: If read requests start to include serial numbers, this function will
 -- no longer be safe to `runRaftTestClientM` on.
 pollForReadResponse :: NodeId -> RaftTestClientM Store
 pollForReadResponse nid = do
-  eRes <- clientReadFrom nid
+  eRes <- clientReadFrom nid ClientReadStateMachine
   case eRes of
-    Right (ClientReadResp res) -> pure res
+    -- TODO Handle other cases of 'ClientReadResp'
+    Right (ClientReadRespStateMachine res) -> pure res
     _ -> do
       liftIO $ Control.Monad.Conc.Class.threadDelay 10000
       pollForReadResponse nid
 
 syncClientRead :: NodeId -> RaftTestClientM (Either CurrentLeader Store)
 syncClientRead nid = do
-  eRes <- clientReadFrom nid
+  eRes <- clientReadFrom nid ClientReadStateMachine
   case eRes of
-    Right (ClientReadResp store) -> pure $ Right store
+    -- TODO Handle other cases of 'ClientReadResp'
+    Right (ClientReadRespStateMachine store) -> pure $ Right store
     Left (RaftClientUnexpectedRedirect (ClientRedirResp ldr)) -> pure $ Left ldr
     _ -> panic "Failed to recieve valid read response"
 
@@ -469,9 +472,9 @@ heartbeat eventChan = do
   atomically $ writeTChan eventChan (TimeoutEvent sysTime HeartbeatTimeout)
 
 clientReadReq :: ClientId -> Event StoreCmd
-clientReadReq cid = MessageEvent $ ClientRequestEvent $ ClientRequest cid ClientReadReq
+clientReadReq cid = MessageEvent $ ClientRequestEvent $ ClientRequest cid (ClientReadReq ClientReadStateMachine)
 
-clientReadRespChan :: RaftTestClientM (ClientResponse Store)
+clientReadRespChan :: RaftTestClientM (ClientResponse Store StoreCmd)
 clientReadRespChan = do
   clientRespChan <- lift (asks testClientEnvRespChan)
   lift $ lift $ atomically $ readTChan clientRespChan

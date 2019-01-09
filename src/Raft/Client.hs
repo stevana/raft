@@ -1,5 +1,8 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -9,6 +12,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Raft.Client
@@ -19,15 +23,24 @@ module Raft.Client
 
 , SerialNum(..)
 
+-- ** Client Requests
 , ClientRequest(..)
 , ClientReq(..)
+, ClientReadReq(..)
+, ReadEntriesSpec(..)
 
+-- ** Client Responses
 , ClientResponse(..)
+
+, ClientRespSpec(..)
+, ClientReadRespSpec(..)
+
 , ClientReadResp(..)
 , ClientWriteResp(..)
 , ClientRedirResp(..)
 
-  -- ** Client Interface
+
+-- ** Client Interface
 , RaftClientSend(..)
 , RaftClientRecv(..)
 
@@ -54,7 +67,7 @@ module Raft.Client
 
 ) where
 
-import Protolude hiding (threadDelay)
+import Protolude hiding (threadDelay, STM, )
 
 import Control.Concurrent.Classy
 import Control.Monad.Base
@@ -65,12 +78,12 @@ import Control.Monad.Trans.Control
 
 import qualified Data.Set as Set
 import qualified Data.Serialize as S
-import Numeric.Natural (Natural)
 
 import System.Random
 import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
 import System.Timeout.Lifted (timeout)
 
+import Raft.Log (Entry, Entries, ReadEntriesSpec)
 import Raft.Types
 
 --------------------------------------------------------------------------------
@@ -80,16 +93,17 @@ import Raft.Types
 {- This is the interface with which Raft nodes interact with client programs -}
 
 -- | Interface for Raft nodes to send messages to clients
-class RaftSendClient m sm where
-  sendClient :: ClientId -> ClientResponse sm -> m ()
+class RaftSendClient m sm v where
+  sendClient :: ClientId -> ClientResponse sm v -> m ()
 
 -- | Interface for Raft nodes to receive messages from clients
 class Show (RaftRecvClientError m v) => RaftRecvClient m v where
   type RaftRecvClientError m v
   receiveClient :: m (Either (RaftRecvClientError m v) (ClientRequest v))
 
-newtype SerialNum = SerialNum Natural
-  deriving (Show, Read, Eq, Ord, Enum, Num, Generic, S.Serialize)
+--------------------------------------------------------------------------------
+-- Client Requests
+--------------------------------------------------------------------------------
 
 -- | Representation of a client request coupled with the client id
 data ClientRequest v
@@ -100,15 +114,38 @@ instance S.Serialize v => S.Serialize (ClientRequest v)
 
 -- | Representation of a client request
 data ClientReq v
-  = ClientReadReq -- ^ Request the latest state of the state machine
+  = ClientReadReq ClientReadReq -- ^ Request the latest state of the state machine
   | ClientWriteReq SerialNum v -- ^ Write a command
   deriving (Show, Generic)
 
 instance S.Serialize v => S.Serialize (ClientReq v)
 
--- | Representation of a client response
-data ClientResponse s
-  = ClientReadResponse (ClientReadResp s)
+data ClientReadReq
+  = ClientReadEntries ReadEntriesSpec
+  | ClientReadStateMachine
+  deriving (Show, Generic, S.Serialize)
+
+--------------------------------------------------------------------------------
+-- Client Responses
+--------------------------------------------------------------------------------
+
+-- | Specification for the data inside a ClientResponse
+data ClientRespSpec sm
+  = ClientReadRespSpec (ClientReadRespSpec sm)
+  | ClientWriteRespSpec Index SerialNum
+  | ClientRedirRespSpec CurrentLeader
+  deriving (Show, Generic, S.Serialize)
+
+data ClientReadRespSpec sm
+  = ClientReadRespSpecEntries ReadEntriesSpec
+  | ClientReadRespSpecStateMachine sm
+  deriving (Show, Generic, S.Serialize)
+
+--------------------------------------------------------------------------------
+
+-- | The datatype sent back to the client as an actual response
+data ClientResponse sm v
+  = ClientReadResponse (ClientReadResp sm v)
     -- ^ Respond with the latest state of the state machine.
   | ClientWriteResponse ClientWriteResp
     -- ^ Respond with the index of the entry appended to the log
@@ -116,15 +153,16 @@ data ClientResponse s
     -- ^ Respond with the node id of the current leader
   deriving (Show, Generic)
 
-instance S.Serialize s => S.Serialize (ClientResponse s)
+instance (S.Serialize sm, S.Serialize v) => S.Serialize (ClientResponse sm v)
 
 -- | Representation of a read response to a client
--- The `s` stands for the "current" state of the state machine
-newtype ClientReadResp s
-  = ClientReadResp s
+data ClientReadResp sm v
+  = ClientReadRespStateMachine sm
+  | ClientReadRespEntry (Entry v)
+  | ClientReadRespEntries (Entries v)
   deriving (Show, Generic)
 
-instance S.Serialize s => S.Serialize (ClientReadResp s)
+instance (S.Serialize sm, S.Serialize v) => S.Serialize (ClientReadResp sm v)
 
 -- | Representation of a write response to a client
 data ClientWriteResp
@@ -151,9 +189,9 @@ class Monad m => RaftClientSend m v where
   type RaftClientSendError m v
   raftClientSend :: NodeId -> ClientRequest v -> m (Either (RaftClientSendError m v) ())
 
-class Monad m => RaftClientRecv m s where
-  type RaftClientRecvError m s
-  raftClientRecv :: m (Either (RaftClientRecvError m s) (ClientResponse s))
+class Monad m => RaftClientRecv m sm v | m sm -> v where
+  type RaftClientRecvError m sm
+  raftClientRecv :: m (Either (RaftClientRecvError m sm) (ClientResponse sm v))
 
 -- | Each client may have at most one command outstanding at a time and
 -- commands must be dispatched in serial number order.
@@ -173,18 +211,18 @@ initRaftClientState = RaftClientState NoLeader 0 mempty
 
 newtype RaftClientT s v m a = RaftClientT
   { unRaftClientT :: ReaderT RaftClientEnv (StateT RaftClientState m) a
-  } deriving (Functor, Applicative, Monad, MonadIO, MonadState RaftClientState, MonadReader RaftClientEnv, MonadFail, Alternative, MonadPlus)
+  } deriving newtype (Functor, Applicative, Monad, MonadIO, MonadState RaftClientState, MonadReader RaftClientEnv, MonadFail, Alternative, MonadPlus)
 
-deriving instance MonadThrow m => MonadThrow (RaftClientT s v m)
-deriving instance MonadCatch m => MonadCatch (RaftClientT s v m)
-deriving instance MonadMask m => MonadMask (RaftClientT s v m)
-deriving instance MonadSTM m => MonadSTM (RaftClientT s v m)
-deriving instance MonadConc m => MonadConc (RaftClientT s v m)
+deriving newtype instance MonadThrow m => MonadThrow (RaftClientT s v m)
+deriving newtype instance MonadCatch m => MonadCatch (RaftClientT s v m)
+deriving newtype instance MonadMask m => MonadMask (RaftClientT s v m)
+deriving newtype instance MonadSTM m => MonadSTM (RaftClientT s v m)
+deriving newtype instance MonadConc m => MonadConc (RaftClientT s v m)
 
 instance MonadTrans (RaftClientT s v) where
   lift = RaftClientT . lift . lift
 
-deriving instance MonadBase IO m => MonadBase IO (RaftClientT s v m)
+deriving newtype instance MonadBase IO m => MonadBase IO (RaftClientT s v m)
 
 instance MonadTransControl (RaftClientT s v) where
     type StT (RaftClientT s v) a = StT (ReaderT RaftClientEnv) (StT (StateT RaftClientState) a)
@@ -211,7 +249,7 @@ instance RaftClientSend m v => RaftClientSend (RaftClientT s v m) v where
   type RaftClientSendError (RaftClientT s v m) v = RaftClientSendError m v
   raftClientSend nid creq = lift (raftClientSend nid creq)
 
-instance RaftClientRecv m s => RaftClientRecv (RaftClientT s v m) s where
+instance RaftClientRecv m s v => RaftClientRecv (RaftClientT s v m) s v where
   type RaftClientRecvError (RaftClientT s v m) s = RaftClientRecvError m s
   raftClientRecv = lift raftClientRecv
 
@@ -225,18 +263,19 @@ data RaftClientError s v m where
   RaftClientSendError  :: RaftClientSendError m v -> RaftClientError s v m
   RaftClientRecvError  :: RaftClientRecvError m s -> RaftClientError s v m
   RaftClientTimeout    :: Text -> RaftClientError s v m
-  RaftClientUnexpectedReadResp  :: ClientReadResp s -> RaftClientError s v m
+  RaftClientUnexpectedReadResp  :: ClientReadResp s v -> RaftClientError s v m
   RaftClientUnexpectedWriteResp :: ClientWriteResp -> RaftClientError s v m
   RaftClientUnexpectedRedirect  :: ClientRedirResp -> RaftClientError s v m
 
-deriving instance (Show s, Show (RaftClientSendError m v), Show (RaftClientRecvError m s)) => Show (RaftClientError s v m)
+deriving instance (Show s, Show v, Show (RaftClientSendError m v), Show (RaftClientRecvError m s)) => Show (RaftClientError s v m)
 
 -- | Send a read request to the curent leader and wait for a response
 clientRead
-  :: (Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s)
-  => RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s))
-clientRead = do
-  eSend <- clientSendRead
+  :: (Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
+  => ClientReadReq
+  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s v))
+clientRead crr = do
+  eSend <- clientSendRead crr
   case eSend of
     Left err -> pure (Left (RaftClientSendError err))
     Right _ -> clientRecvRead
@@ -244,25 +283,27 @@ clientRead = do
 -- | Send a read request to a specific raft node, regardless of leader, and wait
 -- for a response.
 clientReadFrom
-  :: (RaftClientSend m v, RaftClientRecv m s)
+  :: (RaftClientSend m v, RaftClientRecv m s v)
   => NodeId
-  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s))
-clientReadFrom nid = do
-  eSend <- clientSendReadTo nid
+  -> ClientReadReq
+  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s v))
+clientReadFrom nid crr = do
+  eSend <- clientSendReadTo nid crr
   case eSend of
     Left err -> pure (Left (RaftClientSendError err))
     Right _ -> clientRecvRead
 
 -- | 'clientRead' but with a timeout
 clientReadTimeout
-  :: (MonadBaseControl IO m, Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s)
+  :: (MonadBaseControl IO m, Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
   => Int
-  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s))
-clientReadTimeout t = clientTimeout "clientRead" t clientRead
+  -> ClientReadReq
+  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s v))
+clientReadTimeout t = clientTimeout "clientRead" t . clientRead
 
 -- | Send a write request to the current leader and wait for a response
 clientWrite
-  :: (Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s)
+  :: (Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
   => v
   -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
 clientWrite cmd = do
@@ -274,7 +315,7 @@ clientWrite cmd = do
 -- | Send a read request to a specific raft node, regardless of leader, and wait
 -- for a response.
 clientWriteTo
-  :: (RaftClientSend m v, RaftClientRecv m s)
+  :: (RaftClientSend m v, RaftClientRecv m s v)
   => NodeId
   -> v
   -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
@@ -285,14 +326,14 @@ clientWriteTo nid cmd = do
     Right _ -> clientRecvWrite
 
 clientWriteTimeout
-  :: (MonadBaseControl IO m, Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s)
+  :: (MonadBaseControl IO m, Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
   => Int
   -> v
   -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
 clientWriteTimeout t cmd = clientTimeout "clientWrite" t (clientWrite cmd)
 
 clientTimeout
-  :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s)
+  :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s v)
   => Text
   -> Int
   -> RaftClientT s v m (Either (RaftClientError s v m) r)
@@ -326,18 +367,20 @@ retryOnRedirect action = do
 -- | Send a read request to the current leader. Nonblocking.
 clientSendRead
   :: (Show (RaftClientSendError m v), RaftClientSend m v)
-  => RaftClientT s v m (Either (RaftClientSendError m v) ())
-clientSendRead =
+  => ClientReadReq
+  -> RaftClientT s v m (Either (RaftClientSendError m v) ())
+clientSendRead crr =
   asks raftClientId >>= \cid ->
-    clientSend (ClientRequest cid ClientReadReq)
+    clientSend (ClientRequest cid (ClientReadReq crr))
 
 clientSendReadTo
   :: RaftClientSend m v
   => NodeId
+  -> ClientReadReq
   -> RaftClientT s v m (Either (RaftClientSendError m v) ())
-clientSendReadTo nid =
+clientSendReadTo nid crr =
   asks raftClientId >>= \cid ->
-    clientSendTo nid (ClientRequest cid ClientReadReq)
+    clientSendTo nid (ClientRequest cid (ClientReadReq crr))
 
 -- | Send a write request to the current leader. Nonblocking.
 clientSendWrite
@@ -404,7 +447,7 @@ clientSendRandom creq = do
 -- | Waits for a write response on the client socket
 -- Warning: This function discards unexpected read and redirect responses
 clientRecvWrite
-  :: (RaftClientSend m v, RaftClientRecv m s)
+  :: (RaftClientSend m v, RaftClientRecv m s v)
   => RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
 clientRecvWrite = do
   eRes <- clientRecv
@@ -419,8 +462,8 @@ clientRecvWrite = do
 -- | Waits for a read response on the client socket
 -- Warning: This function discards unexpected write and redirect responses
 clientRecvRead
-  :: (RaftClientSend m v, RaftClientRecv m s)
-  => RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s))
+  :: (RaftClientSend m v, RaftClientRecv m s v)
+  => RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s v))
 clientRecvRead = do
   eRes <- clientRecv
   case eRes of
@@ -434,8 +477,8 @@ clientRecvRead = do
 -- | Wait for a response from the current leader.
 -- This function handles leader changes and write request serial numbers.
 clientRecv
-  :: RaftClientRecv m s
-  => RaftClientT s v m (Either (RaftClientRecvError m s) (ClientResponse s))
+  :: RaftClientRecv m s v
+  => RaftClientT s v m (Either (RaftClientRecvError m s) (ClientResponse s v))
 clientRecv = do
   ecresp <- raftClientRecv
   case ecresp of

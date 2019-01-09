@@ -18,11 +18,12 @@ import Protolude
 import qualified Crypto.Hash.SHA256 as SHA256
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base16 as BS16
 import qualified Data.Map as Map
 import Data.Serialize
 import Data.Sequence (Seq(..), (|>), foldlWithIndex)
+import qualified Data.Sequence as Seq
 
-import Raft.Client
 import Raft.Types
 
 data EntryIssuer
@@ -36,13 +37,13 @@ data EntryValue v
   deriving (Show, Generic, Serialize)
 
 newtype EntryHash = EntryHash ByteString
-  deriving (Show, Eq, Generic, Serialize)
+  deriving (Show, Eq, Ord, Generic, Serialize)
 
 genesisHash :: EntryHash
-genesisHash = EntryHash $ BS.replicate 32 0
+genesisHash = EntryHash $ BS16.encode $ BS.replicate 32 0
 
 hashEntry :: Serialize v => Entry v -> EntryHash
-hashEntry = EntryHash . SHA256.hash . encode
+hashEntry = EntryHash . BS16.encode . SHA256.hash . encode
 
 -- | Representation of an entry in the replicated log
 data Entry v = Entry
@@ -196,3 +197,74 @@ updateLog entries =
       case eDel of
         Left err -> pure (Left (RaftLogDeleteError err))
         Right DeleteSuccess -> first RaftLogWriteError <$> writeLogEntries entries
+
+--------------------------------------------------------------------------------
+-- Reading entries by X
+--
+-- Note:
+--
+--   This would be best left up to the implementor, instead of
+--   'readEntriesFrom', it would be best to force the programmer to specify a
+--   `readEntriesBetween` function that reads entries from disk between a
+--   specified interval. For efficiency and ease of use, it might be best to
+--   provide an instance of a typeclass from a popular haskell SQL lib for the
+--   'Entry v' type so that reading entries by index _or_ hash is efficient out
+--   of the box.
+--
+--------------------------------------------------------------------------------
+
+data IndexInterval = IndexInterval (Maybe Index) (Maybe Index)
+  deriving (Show, Generic, Serialize)
+
+data ReadEntriesSpec
+  = ByIndex Index
+  | ByIndices IndexInterval
+  deriving (Show, Generic, Serialize)
+
+data ReadEntriesError m where
+  EntryDoesNotExist :: Either EntryHash Index -> ReadEntriesError m
+  InvalidIntervalSpecified :: (Index, Index) -> ReadEntriesError m
+  ReadEntriesError :: Exception (RaftReadLogError m) => RaftReadLogError m -> ReadEntriesError m
+
+deriving instance Show (ReadEntriesError m)
+deriving instance Typeable m => Exception (ReadEntriesError m)
+
+-- | The result of reading one or more
+data ReadEntriesRes v
+  = OneEntry (Entry v)
+  | ManyEntries (Entries v)
+
+readEntries
+  :: forall m v. (RaftReadLog m v, Exception (RaftReadLogError m))
+  => ReadEntriesSpec
+  -> m (Either (ReadEntriesError m) (ReadEntriesRes v))
+readEntries res =
+  case res of
+    ByIndex idx -> do
+      res <- readLogEntry idx
+      case res of
+        Left err -> pure (Left (ReadEntriesError err))
+        Right Nothing -> pure (Left (EntryDoesNotExist (Right idx)))
+        Right (Just e) -> pure (Right (OneEntry e))
+    ByIndices interval -> fmap ManyEntries <$> readEntriesByIndices interval
+
+-- | Read entries from the log between two indices
+readEntriesByIndices
+  :: forall m v. (RaftReadLog m v, Exception (RaftReadLogError m))
+  => IndexInterval
+  -> m (Either (ReadEntriesError m) (Entries v))
+readEntriesByIndices (IndexInterval l h) =
+  case (l,h) of
+    (Nothing, Nothing) ->
+      first ReadEntriesError <$> readLogEntriesFrom (Index 0)
+    (Nothing, Just hidx) ->
+      bimap ReadEntriesError (Seq.takeWhileL ((<= hidx) . entryIndex))
+        <$> readLogEntriesFrom (Index 0)
+    (Just lidx, Nothing) ->
+      first ReadEntriesError <$> readLogEntriesFrom lidx
+    (Just lidx, Just hidx)
+      | lidx >= hidx ->
+          pure (Left (InvalidIntervalSpecified (lidx, hidx)))
+      | otherwise ->
+          bimap ReadEntriesError (Seq.takeWhileL ((<= hidx) . entryIndex))
+            <$> readLogEntriesFrom lidx

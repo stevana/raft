@@ -60,6 +60,11 @@ instance (MonadIO m, MonadConc m, S.Serialize v) => RaftWriteLog (RaftFileStoreT
       Left err -> panic ("writeLogEntries: " <> err)
       Right currEntries -> liftIO $ Right <$> AW.atomicWriteFile entriesPath (S.encode (currEntries >< newEntries))
 
+-- A RaftPersist instance for the RaftFileStoreT monad.
+--
+-- Warning: `atomicWriteFile` causes large pauses on the order of hundreds of
+-- milliseconds. This can cause leadership to change since the node become
+-- unresponsive for much longer than the recommended election timeouts.
 instance (MonadIO m, MonadConc m) => RaftPersist (RaftFileStoreT m) where
   type RaftPersistError (RaftFileStoreT m) = NodeEnvError
   writePersistentState ps = do

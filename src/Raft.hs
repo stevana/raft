@@ -257,18 +257,23 @@ handleEventLoop initRSM = do
       logDebug $ "[NodeState]: " <> show raftNodeState
       logDebug $ "[State Machine]: " <> show stateMachine
       logDebug $ "[Persistent State]: " <> show persistentState
-      -- Right (log :: Entries v) <- lift $ readLogEntriesFrom index0
-      -- logDebug $ "[Log]: " <> show log
+
       -- Perform core state machine transition, handling the current event
       nodeConfig <- asks raftNodeConfig
       let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
           (resRaftNodeState, resPersistentState, actions, logMsgs) =
             Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event
-      -- Write persistent state to disk
-      eRes <- lift $ writePersistentState resPersistentState
-      case eRes of
-        Left err -> throw err
-        Right _ -> pure ()
+
+      -- Write persistent state to disk.
+      --
+      -- Checking equality of Term + NodeId (what PersistentState is comprised of)
+      -- is very cheap, but writing to disk is not necessarily cheap.
+      when (resPersistentState /= persistentState) $ do
+        eRes <- lift $ writePersistentState resPersistentState
+        case eRes of
+          Left err -> throw err
+          Right _ -> pure ()
+
       -- Update raft node state with the resulting node state
       put resRaftNodeState
       -- Handle logs produced by core state machine

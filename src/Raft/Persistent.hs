@@ -30,7 +30,7 @@ data PersistentState = PersistentState
     -- ^ Last term server has seen
   , votedFor :: Maybe NodeId
     -- ^ Candidate id that received vote in current term
-  } deriving (Show, Generic, S.Serialize)
+  } deriving (Show, Eq, Generic, S.Serialize)
 
 -- | A node initiates its persistent state with term 0 and with its vote blank
 initPersistentState :: PersistentState

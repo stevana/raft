@@ -204,18 +204,21 @@ runRaftNode
 runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
   eventChan <- atomically newTChan
 
-  electionTimer <- newTimerRange timerSeed configElectionTimeout
-  heartbeatTimer <- newTimer configHeartbeatTimeout
+  electionTimer <-
+    newTimerRange (writeTimeoutEvent eventChan ElectionTimeout) timerSeed configElectionTimeout
 
-  let resetElectionTimer = resetTimer electionTimer
-      resetHeartbeatTimer = resetTimer heartbeatTimer
+  heartbeatTimer <-
+    newTimer (writeTimeoutEvent eventChan HeartbeatTimeout) configHeartbeatTimeout
+
+  let resetElectionTimer = void $ resetTimer electionTimer
+      resetHeartbeatTimer = void $ resetTimer heartbeatTimer
       raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logDest
 
   runRaftT initRaftNodeState raftEnv $ do
 
     -- Fork all event producers to run concurrently
-    lift $ fork (electionTimeoutTimer electionTimer eventChan)
-    lift $ fork (heartbeatTimeoutTimer heartbeatTimer eventChan)
+    lift $ fork (electionTimeoutTimer electionTimer)
+    lift $ fork (heartbeatTimeoutTimer heartbeatTimer)
     fork (rpcHandler eventChan)
     fork (clientReqHandler eventChan)
 
@@ -533,17 +536,24 @@ clientReqHandler eventChan =
         atomically $ writeTChan eventChan clientReqEvent
 
 -- | Producer for the election timeout event
-electionTimeoutTimer :: (MonadIO m, MonadConc m) => Timer m -> EventChan m v -> m ()
-electionTimeoutTimer timer eventChan =
+electionTimeoutTimer :: (MonadIO m, MonadConc m) => Timer m -> m ()
+electionTimeoutTimer timer =
   forever $ do
-    startTimer timer >> waitTimer timer
-    now <- liftIO getSystemTime
-    atomically $ writeTChan eventChan (TimeoutEvent now ElectionTimeout)
+    success <- startTimer timer
+    when (not success) $
+      panic "[Failed invariant]: Election timeout timer failed to start."
+    waitTimer timer
 
 -- | Producer for the heartbeat timeout event
-heartbeatTimeoutTimer :: (MonadIO m, MonadConc m) => Timer m -> EventChan m v -> m ()
-heartbeatTimeoutTimer timer eventChan =
+heartbeatTimeoutTimer :: (MonadIO m, MonadConc m) => Timer m -> m ()
+heartbeatTimeoutTimer timer =
   forever $ do
-    startTimer timer >> waitTimer timer
-    now <- liftIO getSystemTime
-    atomically $ writeTChan eventChan (TimeoutEvent now HeartbeatTimeout)
+    success <- startTimer timer
+    when (not success) $
+      panic "[Failed invariant]: Heartbeat timeout timer failed to start."
+    waitTimer timer
+
+writeTimeoutEvent :: (MonadIO m , MonadConc m) => EventChan m v -> Timeout -> m ()
+writeTimeoutEvent eventChan timeout = do
+  now <- liftIO getSystemTime
+  atomically $ writeTChan eventChan (TimeoutEvent now timeout)

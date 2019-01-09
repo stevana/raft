@@ -209,11 +209,10 @@ main = do
         let nodeConfig = NodeConfig
                           { configNodeId = toS nid
                           , configNodeIds = allNodeIds
-                          -- The election timeout must currently be an order of
-                          -- magnitude greater than the recommended timeout
-                          -- range of 150ms - 300ms due to an unresolved issue.
-                          , configElectionTimeout = (1500000, 3000000)
-                          , configHeartbeatTimeout = 200000
+                          -- These are recommended timeouts from the original
+                          -- raft paper and the ARC report.
+                          , configElectionTimeout = (150000, 300000)
+                          , configHeartbeatTimeout = 50000
                           }
         fork $ RaftExampleM $ lift (acceptConnections host port)
         electionTimerSeed <- liftIO randomIO

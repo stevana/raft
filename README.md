@@ -464,6 +464,10 @@ from the
 file, together with the function we define to run the stack of monads that
 derive our Raft type classes.
 
+# Test suite dependencies
+
+The test suite depends on libfiu (commonly installed with package `fiu-utils` ), which it uses to simulate network failures.
+
 # References
 
 1. Ongaro, D., Ousterhout, J. [In Search of an Understandable Consensus

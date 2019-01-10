@@ -38,7 +38,6 @@ import qualified Raft.Logging as Logging
 -- | Interface to handle commands in the underlying state machine. Functional
 --dependency permitting only a single state machine command to be defined to
 --update the state machine.
-
 class RSMP sm v | sm -> v where
   data RSMPError sm v
   type RSMPCtx sm v = ctx | ctx -> sm v

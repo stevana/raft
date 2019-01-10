@@ -77,11 +77,11 @@ datatypes that contain the relevant data to the current node's mode with the
 node in mode `Follower` is indeed `FollowerState`, etc:
 
 ```haskell
--- | The volatile state of a Raft Node
-data NodeState (a :: Mode) where
-  NodeFollowerState :: FollowerState -> NodeState 'Follower
-  NodeCandidateState :: CandidateState -> NodeState 'Candidate
-  NodeLeaderState :: LeaderState -> NodeState 'Leader
+-- | The volatile state of a Raft node
+data NodeState (a :: Mode) v where
+  NodeFollowerState :: FollowerState v -> NodeState 'Follower v
+  NodeCandidateState :: CandidateState v -> NodeState 'Candidate v
+  NodeLeaderState :: LeaderState v -> NodeState 'Leader v
 ```
 
 The library's main event loop is comprised of a simple flow: Raft nodes receive
@@ -112,6 +112,7 @@ data Transition (init :: Mode) (res :: Mode) where
   HigherTermFoundCandidate :: Transition 'Candidate 'Follower
   BecomeLeader             :: Transition 'Candidate 'Leader
 
+  HandleClientReq          :: Transition 'Leader 'Leader
   SendHeartbeat            :: Transition 'Leader 'Leader
   DiscoverNewLeader        :: Transition 'Leader 'Follower
   HigherTermFoundLeader    :: Transition 'Leader 'Follower
@@ -171,14 +172,16 @@ committed by a leader to the state machine will eventually be replicated on
 every node in the network at the same index.
 
 As the only part of the internal event loop that needs to be specified manually,
-We ask users of our library to provide an instance of the `StateMachine`
+We ask users of our library to provide an instance of the state machine `RSMP`
 typeclass. This typeclass relates a state machine type to a command type
-and a single type class function 'applyCommittedLogEntry', a pure function that
+and a single type class function `applyCmdRSMP`, a pure function that
 should return the result of applying the command to the initial state machine.
 
 ```haskell
-class StateMachine sm v | sm -> v where
-  applyCommittedLogEntry :: sm -> v -> sm
+class RSMP sm v | sm -> v where
+  data RSMPError sm v
+  type RSMPCtx sm v = ctx | ctx -> sm v
+  applyCmdRSMP :: RSMPCtx sm v -> sm -> v -> Either (RSMPError sm v) sm
 ```
 
 Everything else related to the core event handling loop is not exposed to
@@ -253,7 +256,6 @@ typeclass.
 ```haskell
 -- | The RaftPersist type class specifies how to read and write the persistent
 -- state to disk.
---
 class Monad m => RaftPersist m where
   type RaftPersistError m
   readPersistentState
@@ -286,23 +288,25 @@ sent from one raft node to another is indeed receivable via `receiveRPC` on the
 node to which it was sent:
 
 ```haskell
--- | Provide an interface for nodes to send messages to one
+-- | Interface for nodes to send messages to one
 -- another. E.g. Control.Concurrent.Chan, Network.Socket, etc.
 class RaftSendRPC m v where
   sendRPC :: NodeId -> RPCMessage v -> m ()
 
--- | Provide an interface for nodes to receive messages from one
+-- | Interface for nodes to receive messages from one
 -- another
 class RaftRecvRPC m v where
-  receiveRPC :: m (RPCMessage v)
+  type RaftRecvRPCError m v
+  receiveRPC :: m (Either (RaftRecvRPCError m v) (RPCMessage v))
 
--- | Provide an interface for Raft nodes to send messages to clients
-class RaftSendClient m sm where
-  sendClient :: ClientId -> ClientResponse sm -> m ()
+-- | Interface for Raft nodes to send messages to clients
+class RaftSendClient m sm v where
+  sendClient :: ClientId -> ClientResponse sm v -> m ()
 
--- | Provide an interface for Raft nodes to receive messages from clients
+-- | Interface for Raft nodes to receive messages from clients
 class RaftRecvClient m v where
-  receiveClient :: m (ClientRequest v)
+  type RaftRecvClientError m v
+  receiveClient :: m (Either (RaftRecvClientError m v) (ClientRequest v))
 ```
 
 We have written a default implementation for network sockets over TCP in
@@ -344,8 +348,8 @@ have further insight.
 
     **Note:** If you want to run a raft example node with _existing_ persistent data,
     pass the `existing` command line option to the `raft-example` program instead
-    of `fresh`: 
-    
+    of `fresh`:
+
     ```$ stack exec raft-example node existing ...```
 
 3) Run a client:
@@ -391,12 +395,17 @@ together](https://github.com/adjoint-io/raft#putting-it-all-together)
 
 ### Define the state machine
 
-The only requirement for our state machine is to instantiate the `StateMachine`
+The only requirement for our state machine is to instantiate the state machine `RSMP`
 type class.
 
 ```haskell
-class StateMachine sm v | sm -> v where
-  applyCommittedLogEntry :: sm -> v -> sm
+-- | Interface to handle commands in the underlying state machine. Functional
+--dependency permitting only a single state machine command to be defined to
+--update the state machine.
+class RSMP sm v | sm -> v where
+  data RSMPError sm v
+  type RSMPCtx sm v = ctx | ctx -> sm v
+  applyCmdRSMP :: RSMPCtx sm v -> sm -> v -> Either (RSMPError sm v) sm
 ```
 
 In our [example](https://github.com/adjoint-io/raft/blob/master/app/Main.hs) we

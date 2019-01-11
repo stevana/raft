@@ -230,7 +230,7 @@ runRaftTestClientM
   -> RaftTestClientM a
   -> ConcIO a
 runRaftTestClientM cid chan chans rtcm = do
-  raftClientState <- initRaftClientState <$> liftIO newStdGen
+  raftClientState <- initRaftClientState mempty <$> liftIO newStdGen
   let raftClientEnv = RaftClientEnv cid
       testClientEnv = TestClientEnv chan chans
    in flip runReaderT testClientEnv

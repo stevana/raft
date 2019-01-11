@@ -206,8 +206,8 @@ data RaftClientEnv = RaftClientEnv
   { raftClientId :: ClientId
   }
 
-initRaftClientState :: StdGen -> RaftClientState
-initRaftClientState = RaftClientState NoLeader 0 mempty
+initRaftClientState :: Set NodeId -> StdGen -> RaftClientState
+initRaftClientState = RaftClientState NoLeader 0
 
 newtype RaftClientT s v m a = RaftClientT
   { unRaftClientT :: ReaderT RaftClientEnv (StateT RaftClientState m) a

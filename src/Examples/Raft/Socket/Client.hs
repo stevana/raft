@@ -107,7 +107,7 @@ runRaftSocketClientM
   -> RaftSocketClientM s v a
   -> IO a
 runRaftSocketClientM cid nids respChan rscm = do
-  raftClientState <- initRaftClientState <$> liftIO newStdGen
+  raftClientState <- initRaftClientState nids <$> liftIO newStdGen
   let raftClientEnv = RaftClientEnv cid
   flip runReaderT respChan
     . unRaftClientRespChanT

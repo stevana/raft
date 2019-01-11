@@ -98,7 +98,7 @@ acceptConnections
 acceptConnections host port = do
   socketEnv@NodeSocketEnv{..} <- ask
   serve (Host host) port $ \(sock, _) -> do
-    recvSockM <- recv sock (4 * 4096)
+    recvSockM <- recvAll sock maxMsgSize
     case recvSockM of
       Nothing -> putText "Socket was closed on the other end"
       Just recvSock -> case S.decode recvSock of

@@ -9,6 +9,9 @@ import qualified Data.Word8 as W8
 
 import Raft.Types
 
+maxMsgSize :: Int
+maxMsgSize = 1000 * 4096
+
 -- | Convert a host and a port to a valid NodeId
 hostPortToNid :: (N.HostName, N.ServiceName) -> NodeId
 hostPortToNid = toS . hostPortToNidBS
@@ -31,3 +34,14 @@ getFreePort = do
   port <- NS.socketPort sock
   NS.close sock
   pure $ show port
+
+recvAll :: N.Socket -> Int -> IO (Maybe ByteString)
+recvAll sock size = do
+  recvSockM <- N.recv sock size
+  case recvSockM of
+    Nothing -> pure Nothing
+    Just recvSockNow -> do
+       mRecvSockLater <- recvAll sock size
+       case mRecvSockLater of
+         Nothing -> pure $ Just recvSockNow
+         Just recvSockLater -> pure . Just $ recvSockNow <> recvSockLater

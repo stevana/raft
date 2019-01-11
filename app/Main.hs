@@ -224,7 +224,7 @@ main = do
                           }
         fork $ RaftExampleM $ lift (acceptConnections host port)
         electionTimerSeed <- liftIO randomIO
-        runRaftNode nodeConfig LogStdout electionTimerSeed (mempty :: Store)
+        runRaftNode nodeConfig (LogCtx LogStdout Debug) electionTimerSeed (mempty :: Store)
 
     initPersistentFile :: NodeId -> IO ()
     initPersistentFile nid = do

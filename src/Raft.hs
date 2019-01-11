@@ -59,6 +59,7 @@ module Raft
   , RaftLogExceptions(..)
 
   -- * Logging
+  , LogCtx(..)
   , LogDest(..)
   , Severity(..)
 
@@ -125,7 +126,7 @@ import Raft.Config
 import Raft.Event
 import Raft.Handle
 import Raft.Log
-import Raft.Logging hiding (logInfo, logDebug, logCritical)
+import Raft.Logging hiding (logInfo, logDebug, logCritical, logAndPanic)
 import Raft.Monad hiding (logInfo, logDebug)
 import Raft.NodeState
 import Raft.Persistent
@@ -142,7 +143,7 @@ data RaftEnv v m = RaftEnv
   , resetElectionTimer :: m ()
   , resetHeartbeatTimer :: m ()
   , raftNodeConfig :: NodeConfig
-  , raftNodeLogDest :: LogDest
+  , raftNodeLogCtx :: LogCtx
   }
 
 newtype RaftT v m a = RaftT
@@ -173,10 +174,13 @@ runRaftT raftNodeState raftEnv =
 ------------------------------------------------------------------------------
 
 logDebug :: MonadIO m => Text -> RaftT v m ()
-logDebug msg = flip logDebugIO msg =<< asks raftNodeLogDest
+logDebug msg = flip logDebugIO msg =<< asks raftNodeLogCtx
 
 logCritical :: MonadIO m => Text -> RaftT v m ()
-logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogDest
+logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogCtx
+
+logAndPanic :: MonadIO m => Text -> RaftT v m a
+logAndPanic msg = flip logAndPanicIO msg =<< asks raftNodeLogCtx
 
 ------------------------------------------------------------------------------
 
@@ -197,11 +201,11 @@ runRaftNode
      , Exception (RaftPersistError m)
      )
    => NodeConfig           -- ^ Node configuration
-   -> LogDest              -- ^ Logs destination
+   -> LogCtx               -- ^ Logs destination
    -> Int                  -- ^ Timer seed
    -> sm                   -- ^ Initial state machine state
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
+runRaftNode nodeConfig@NodeConfig{..} logCtx timerSeed initRSM = do
   eventChan <- atomically newTChan
 
   electionTimer <-
@@ -212,7 +216,7 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initRSM = do
 
   let resetElectionTimer = void $ resetTimer electionTimer
       resetHeartbeatTimer = void $ resetTimer heartbeatTimer
-      raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logDest
+      raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logCtx
 
   runRaftT initRaftNodeState raftEnv $ do
 
@@ -363,7 +367,7 @@ handleAction nodeConfig action = do
     AppendLogEntries entries -> do
       eRes <- lift (updateLog entries)
       case eRes of
-        Left err -> panic (show err)
+        Left err -> logAndPanic (show err)
         Right _ -> do
           -- Update the last log entry data
           modify $ \(RaftNodeState ns) ->
@@ -382,7 +386,7 @@ handleAction nodeConfig action = do
                 let creqMap = Map.map (second Just) committedClientReqs
                 put $ RaftNodeState $ NodeLeaderState
                   ls { lsClientReqCache = creqMap `Map.union` lsClientReqCache }
-        _ -> panic "Only the leader should update the client request cache..."
+        _ -> logAndPanic "Only the leader should update the client request cache..."
   where
     respondClientWrite :: (ClientId, (SerialNum, Index)) -> RaftT v m ()
     respondClientWrite (cid, (sn,idx)) =
@@ -473,6 +477,7 @@ handleAction nodeConfig action = do
 applyLogEntries
   :: forall sm m v.
      ( Show sm
+     , MonadIO m
      , MonadConc m
      , RaftReadLog m v
      , Exception (RaftReadLogError m)
@@ -491,14 +496,14 @@ applyLogEntries stateMachine = do
         eLogEntry <- lift $ readLogEntry newLastAppliedIndex
         case eLogEntry of
           Left err -> throw err
-          Right Nothing -> panic $ "No log entry at 'newLastAppliedIndex := " <> show newLastAppliedIndex <> "'"
+          Right Nothing -> logAndPanic $ "No log entry at 'newLastAppliedIndex := " <> show newLastAppliedIndex <> "'"
           Right (Just logEntry) -> do
             -- The command should be verified by the leader, thus all node
             -- attempting to apply the committed log entry should not fail when
             -- doing so; failure here means something has gone very wrong.
             eRes <- lift (applyEntryRSM stateMachine logEntry)
             case eRes of
-              Left err -> panic $ "Failed to apply committed log entry: " <> show err
+              Left err -> logAndPanic $ "Failed to apply committed log entry: " <> show err
               Right nsm -> applyLogEntries nsm
       else pure stateMachine
   where
@@ -526,8 +531,8 @@ handleLogs
   => [LogMsg]
   -> RaftT v m ()
 handleLogs logs = do
-  logDest <- asks raftNodeLogDest
-  mapM_ (logToDest logDest) logs
+  logCtx <- asks raftNodeLogCtx
+  mapM_ (logToDest logCtx) logs
 
 ------------------------------------------------------------------------------
 -- Event Producers

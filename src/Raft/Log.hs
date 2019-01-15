@@ -29,12 +29,12 @@ import Raft.Types
 data EntryIssuer
   = ClientIssuer ClientId SerialNum
   | LeaderIssuer LeaderId
-  deriving (Show, Generic, Serialize)
+  deriving (Show, Eq, Generic, Serialize)
 
 data EntryValue v
   = EntryValue v
   | NoValue -- ^ Used as a first committed entry of a new term
-  deriving (Show, Generic, Serialize)
+  deriving (Show, Eq, Generic, Serialize)
 
 newtype EntryHash = EntryHash ByteString
   deriving (Show, Eq, Ord, Generic, Serialize)
@@ -56,7 +56,7 @@ data Entry v = Entry
   , entryIssuer :: EntryIssuer
     -- ^ Id of the client that issued the command
   , entryPrevHash :: EntryHash
-  } deriving (Show, Generic, Serialize)
+  } deriving (Show, Eq, Generic, Serialize)
 
 type Entries v = Seq (Entry v)
 

@@ -84,7 +84,7 @@ instance (S.Serialize v, MonadIO m) => RaftClientSend (RaftClientRespChanT s v m
         -- may have been closed by the running process
         N.connect host port $ \(sock, sockAddr) ->
           N.send sock (S.encode (ClientRequestEvent creq))
-    let errPrefix = "Failed to send ClientWriteReq: "
+    let errPrefix = "Failed to send client request: "
     case mRes of
       Nothing -> pure (Left (errPrefix <> "'connect' timed out"))
       Just (Left (err :: SomeException)) -> pure $ Left (errPrefix <> show err)

@@ -122,7 +122,7 @@ clientResponseServer
 clientResponseServer host port = do
   respChan <- asks clientRespChan
   N.serve (N.Host host) port $ \(sock, _) -> do
-    mBytes <- recvAll sock maxMsgSize
+    mBytes <- N.recv sock (4 * 4096)
     case mBytes of
       Nothing -> putText "Socket was closed on the other end"
       Just bytes -> case S.decode bytes of

@@ -3,14 +3,14 @@ module Examples.Raft.Socket.Common where
 import Protolude
 
 import qualified Data.ByteString as BS
-import qualified Network.Simple.TCP as N
-import qualified Network.Socket as NS
+import qualified Data.Serialize as S
+import qualified Data.Serialize as Get
 import qualified Data.Word8 as W8
 
-import Raft.Types
+import qualified Network.Simple.TCP as N
+import qualified Network.Socket as NS
 
-maxMsgSize :: Int
-maxMsgSize = 1000 * 4096
+import Raft.Types
 
 -- | Convert a host and a port to a valid NodeId
 hostPortToNid :: (N.HostName, N.ServiceName) -> NodeId
@@ -35,13 +35,19 @@ getFreePort = do
   NS.close sock
   pure $ show port
 
-recvAll :: N.Socket -> Int -> IO (Maybe ByteString)
-recvAll sock size = do
-  recvSockM <- N.recv sock size
-  case recvSockM of
-    Nothing -> pure Nothing
-    Just recvSockNow -> do
-       mRecvSockLater <- recvAll sock size
-       case mRecvSockLater of
-         Nothing -> pure $ Just recvSockNow
-         Just recvSockLater -> pure . Just $ recvSockNow <> recvSockLater
+-- | Receive bytes on a socket until an entire message can be decoded.
+-- This function fixes the deserialization of the bytes sent on the socket to
+-- the implementation of the Serialize typeclass.
+recvSerialized :: S.Serialize a => N.Socket -> IO (Maybe a)
+recvSerialized sock = do
+  result <- go $ Get.runGetPartial S.get
+  case result of
+    Get.Fail {} -> pure Nothing
+    Get.Done val _ -> pure . pure $ val
+    Get.Partial {} -> pure Nothing
+  where
+    go getPartial = do
+      bytes <- fromMaybe BS.empty <$> N.recv sock 4096
+      case getPartial bytes  of
+        Get.Partial getNextPartial -> go getNextPartial
+        x -> pure x

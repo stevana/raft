@@ -98,15 +98,15 @@ acceptConnections
 acceptConnections host port = do
   socketEnv@NodeSocketEnv{..} <- ask
   serve (Host host) port $ \(sock, _) -> do
-    recvSockM <- recvAll sock maxMsgSize
-    case recvSockM of
+    mVal <- recvSerialized sock
+    case mVal of
       Nothing -> putText "Socket was closed on the other end"
-      Just recvSock -> case S.decode recvSock of
-        Left err -> putText $ "Failed to decode message: " <> toS err
-        Right (ClientRequestEvent req@(ClientRequest cid _)) ->
-          atomically $ writeTChan nsClientReqQueue req
-        Right (RPCMessageEvent msg) ->
-          atomically $ writeTChan nsMsgQueue msg
+      Just val ->
+        case val of
+          ClientRequestEvent req ->
+            atomically $ writeTChan nsClientReqQueue req
+          RPCMessageEvent msg ->
+            atomically $ writeTChan nsMsgQueue msg
 
 newSock :: HostName -> ServiceName -> IO Socket
 newSock host port = do

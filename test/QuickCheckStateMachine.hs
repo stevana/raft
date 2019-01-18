@@ -208,7 +208,7 @@ semantics h (SpawnNode port1 p) = do
       persistence Existing = "existing"
   (_, _, _, ph) <- createProcess_ "raft node"
     (proc "fiu-run" [ "-x", "stack", "exec", "raft-example", "node"
-                    , persistence p
+                    , persistence p, "postgres", show port1
                     , "localhost:" ++ show port1
                     , "localhost:" ++ show port2
                     , "localhost:" ++ show port3

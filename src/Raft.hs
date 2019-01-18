@@ -187,7 +187,8 @@ logAndPanic msg = flip logAndPanicIO msg =<< asks raftNodeLogCtx
 -- | Run timers, RPC and client request handlers and start event loop.
 -- It should run forever
 runRaftNode
-  :: ( Show v, Show sm, Serialize v, Show (Action sm v), Show (RaftLogError m), Typeable m
+  :: forall m sm v.
+     ( Show v, Show sm, Serialize v, Show (Action sm v), Show (RaftLogError m), Typeable m
      , MonadIO m, MonadConc m, MonadFail m
      , RSM sm v m
      , Show (RSMPError sm v)
@@ -206,6 +207,9 @@ runRaftNode
    -> sm                   -- ^ Initial state machine state
    -> m ()
 runRaftNode nodeConfig@NodeConfig{..} logCtx timerSeed initRSM = do
+  -- Initialize the persistent state and logs storage if specified
+  initializeStorage
+
   eventChan <- atomically newTChan
 
   electionTimer <-
@@ -228,6 +232,20 @@ runRaftNode nodeConfig@NodeConfig{..} logCtx timerSeed initRSM = do
 
     -- Start the main event handling loop
     handleEventLoop initRSM
+
+  where
+    initializeStorage =
+      case configStorageState of
+        New -> do
+          ipsRes <- initializePersistentState
+          case ipsRes of
+            Left err -> throw err
+            Right _ -> do
+              ilRes <- initializeLog (Proxy :: Proxy v)
+              case ilRes of
+                Left err -> throw err
+                Right _ -> pure ()
+        Existing -> pure ()
 
 handleEventLoop
   :: forall sm v m.

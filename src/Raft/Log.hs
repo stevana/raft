@@ -11,7 +11,36 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GADTs #-}
 
-module Raft.Log where
+module Raft.Log (
+
+  EntryIssuer(..),
+  EntryValue(..),
+
+  EntryHash,
+  genesisHash,
+  hashEntry,
+
+  Entry(..),
+  Entries,
+
+  RaftInitLog(..),
+  ReadEntriesSpec(..),
+  ReadEntriesRes(..),
+  IndexInterval(..),
+  RaftReadLog(..),
+  RaftWriteLog(..),
+  RaftDeleteLog(..),
+  DeleteSuccess(..),
+
+  RaftLog(..),
+  RaftLogError,
+  RaftLogExceptions,
+
+  updateLog,
+  clientReqData,
+  readEntries,
+
+) where
 
 import Protolude
 
@@ -24,12 +53,15 @@ import Data.Serialize
 import Data.Sequence (Seq(..), (|>), foldlWithIndex)
 import qualified Data.Sequence as Seq
 
+import Database.PostgreSQL.Simple.ToField (Action(..), ToField(..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), returnError, ResultError(..))
+
 import Raft.Types
 
 data EntryIssuer
   = ClientIssuer ClientId SerialNum
   | LeaderIssuer LeaderId
-  deriving (Show, Eq, Generic, Serialize)
+  deriving (Show, Read, Eq, Generic, Serialize)
 
 data EntryValue v
   = EntryValue v
@@ -112,6 +144,11 @@ clientReqData = go mempty
             LeaderIssuer _ -> go acc rest
             ClientIssuer cid sn -> go (Map.insert cid (sn, entryIndex e) acc) rest
 
+-- | Provides an interface to initialize a fresh log entry storage
+class RaftInitLog m v where
+  type RaftInitLogError m
+  initializeLog :: Proxy v -> m (Either (RaftInitLogError m) ())
+
 -- | Provides an interface for nodes to write log entries to storage.
 class (Show (RaftWriteLogError m), Monad m) => RaftWriteLog m v where
   type RaftWriteLogError m
@@ -170,12 +207,13 @@ class (Show (RaftReadLogError m), Monad m) => RaftReadLog m v where
               Right Nothing -> panic "Malformed log"
               Right (Just logEntry) -> fmap (|> logEntry) <$>  go (decrIndexWithDefault0 idx')
 
-type RaftLog m v = (RaftReadLog m v, RaftWriteLog m v, RaftDeleteLog m v)
-type RaftLogExceptions m = (Exception (RaftReadLogError m), Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m))
+type RaftLog m v = (RaftInitLog m v, RaftReadLog m v, RaftWriteLog m v, RaftDeleteLog m v)
+type RaftLogExceptions m = (Exception (RaftInitLogError m), Exception (RaftReadLogError m), Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m))
 
 -- | Representation of possible errors that come from reading, writing or
 -- deleting logs from the persistent storage
 data RaftLogError m where
+  RaftLogInitError :: Show (RaftInitLogError m) => RaftInitLogError m -> RaftLogError m
   RaftLogReadError :: Show (RaftReadLogError m) => RaftReadLogError m -> RaftLogError m
   RaftLogWriteError :: Show (RaftWriteLogError m) => RaftWriteLogError m -> RaftLogError m
   RaftLogDeleteError :: Show (RaftDeleteLogError m) => RaftDeleteLogError m -> RaftLogError m
@@ -199,7 +237,7 @@ updateLog entries =
         Right DeleteSuccess -> first RaftLogWriteError <$> writeLogEntries entries
 
 --------------------------------------------------------------------------------
--- Reading entries by X
+-- Reading entries by <X>
 --
 -- Note:
 --
@@ -268,3 +306,36 @@ readEntriesByIndices (IndexInterval l h) =
       | otherwise ->
           bimap ReadEntriesError (Seq.takeWhileL ((<= hidx) . entryIndex))
             <$> readLogEntriesFrom lidx
+
+--------------------------------------------------------------------------------
+-- PostgreSQL Utils
+--------------------------------------------------------------------------------
+
+instance Serialize v => ToField (EntryValue v) where
+  toField = EscapeByteA . encode
+
+instance (Typeable v, Serialize v) => FromField (EntryValue v) where
+  fromField f mdata = do
+    bs <- fromField f mdata
+    case decode <$> bs of
+      Nothing          -> returnError UnexpectedNull f ""
+      Just (Left err)  -> returnError ConversionFailed f err
+      Just (Right entry) -> return entry
+
+-- TODO don't use show/read
+instance ToField EntryIssuer where
+  toField entryIssuer = Escape (show entryIssuer)
+
+-- TODO don't use show/read
+instance FromField EntryIssuer where
+  fromField f mdata = do
+    case readEither . toS <$> mdata of
+      Nothing -> returnError UnexpectedNull f ""
+      Just (Left err) -> returnError ConversionFailed f err
+      Just (Right entryIssuer) -> return entryIssuer
+
+instance ToField EntryHash where
+  toField (EntryHash hbs) = toField hbs
+
+instance FromField EntryHash where
+  fromField f = fmap EntryHash . fromField f

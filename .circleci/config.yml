@@ -4,27 +4,60 @@ jobs:
     machine: true
     steps:
       - checkout
-      - run: sudo apt-get update
-      - run: sudo apt-get install -y wget sudo fiu-utils
-      - run: wget https://github.com/commercialhaskell/stack/releases/download/v1.7.1/stack-1.7.1-linux-x86_64.tar.gz -O /tmp/stack.tar.gz
-      - run: sudo mkdir /tmp/stack-download
-      - run: sudo tar -xzf /tmp/stack.tar.gz -C /tmp/stack-download
-      - run: sudo chmod +x /tmp/stack-download/stack-1.7.1-linux-x86_64/stack
-      - run: sudo mv /tmp/stack-download/stack-1.7.1-linux-x86_64/stack /usr/bin/stack
-      - run: stack --version --no-terminal
+      
+      - run:
+          name: Install System Dependencies
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y wget fiu-utils libpq-dev postgresql
+      
+      - run:
+          name: Install Haskell stack
+          command: |
+            wget https://github.com/commercialhaskell/stack/releases/download/v1.7.1/stack-1.7.1-linux-x86_64.tar.gz -O /tmp/stack.tar.gz
+            sudo mkdir /tmp/stack-download
+            sudo tar -xzf /tmp/stack.tar.gz -C /tmp/stack-download
+            sudo chmod +x /tmp/stack-download/stack-1.7.1-linux-x86_64/stack
+            sudo mv /tmp/stack-download/stack-1.7.1-linux-x86_64/stack /usr/bin/stack
+            stack --version --no-terminal
+      
+      - run:
+          name: Install dockerize tool
+          command: |
+            wget https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+            sudo tar -C /usr/local/bin -xzvf dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+            sudo rm dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+          environment:
+            DOCKERIZE_VERSION: v0.6.1
+      - run:
+          name: Wait for PostgreSQL 
+          command: dockerize -wait tcp://localhost:5432 -timeout 1m
+      - run:
+          name: Setup PostgreSQL DB
+          command: sudo -su postgres psql -U postgres -c "CREATE USER libraft_test WITH CREATEDB PASSWORD 'libraft_test';"
+
       - restore_cache:
-          key: raft-{{ checksum "package.yaml" }}
+          key: libraft-v1-{{ checksum "package.yaml" }}
           paths:
             - .stack-work
             - ~/.stack
-      - run: stack setup --no-terminal
-      - run: stack test --no-terminal
+      
+      - run:
+          name: Build libraft dependencies
+          command: |
+            stack setup --no-terminal
+            stack test --no-terminal --no-run-tests -j2 --system-ghc --
+      
       - save_cache:
-          key: raft-{{ checksum "package.yaml" }}
+          key: libraft-v1-{{ checksum "package.yaml" }}
           paths:
              - .stack-work
              - ~/.stack
-
+     
+      - run: 
+          name: Run tests for libraft
+          command: stack test --no-terminal
+      
 workflows:
   version: 2
   build_and_test:

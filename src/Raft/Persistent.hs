@@ -17,6 +17,9 @@ import Raft.Types
 -- state to disk.
 class Monad m => RaftPersist m where
   type RaftPersistError m
+  initializePersistentState
+    :: Exception (RaftPersistError m)
+    => m (Either (RaftPersistError m) ())
   readPersistentState
     :: Exception (RaftPersistError m)
     => m (Either (RaftPersistError m) PersistentState)

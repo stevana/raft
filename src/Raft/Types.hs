@@ -14,6 +14,9 @@ import Protolude
 import Data.Serialize
 import Numeric.Natural (Natural)
 
+import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.FromField
+
 --------------------------------------------------------------------------------
 -- NodeIds
 --------------------------------------------------------------------------------
@@ -24,12 +27,12 @@ type NodeIds = Set NodeId
 
 -- | Unique identifier of a client
 newtype ClientId = ClientId NodeId
-  deriving stock (Show, Eq, Ord, Generic)
+  deriving stock (Show, Read, Eq, Ord, Generic)
   deriving newtype Serialize
 
 -- | Unique identifier of a leader
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Read, Eq, Generic)
   deriving newtype Serialize
 
 -- | Representation of the current leader in the cluster. The system is
@@ -48,6 +51,21 @@ data CurrentLeader
 newtype Term = Term Natural
   deriving stock (Generic)
   deriving newtype (Show, Eq, Ord, Enum, Serialize)
+
+instance ToField Term where
+  toField (Term n) = toField (fromIntegral n :: Int)
+
+instance FromField Term where
+  fromField f mdata =
+    case (intToNatural <=< readEither) . toS <$> mdata of
+      Nothing -> returnError UnexpectedNull f ""
+      Just (Left err) -> returnError ConversionFailed f err
+      Just (Right nat) -> return (Term nat)
+
+intToNatural :: Int -> Either [Char] Natural
+intToNatural n
+  | n < 0 = Left "Natural numbers must be >= 0"
+  | otherwise = Right (fromIntegral n)
 
 -- | Initial term. Terms start at 0
 term0 :: Term
@@ -69,6 +87,16 @@ newtype Index = Index Natural
   deriving stock (Show, Generic)
   deriving newtype (Eq, Ord, Enum, Num, Integral, Real, Serialize)
 
+instance ToField Index where
+  toField (Index n) = toField (fromIntegral n :: Int)
+
+instance FromField Index where
+  fromField f mdata =
+    case (intToNatural <=< readEither) . toS <$> mdata of
+      Nothing -> returnError UnexpectedNull f ""
+      Just (Left err) -> returnError ConversionFailed f err
+      Just (Right nat) -> return (Index nat)
+
 -- | Initial index. Indeces start at 0
 index0 :: Index
 index0 = Index 0
@@ -87,5 +115,5 @@ decrIndexWithDefault0 i = pred i
 -----------------------------------
 
 newtype SerialNum = SerialNum Natural
-  deriving stock (Show, Generic)
-  deriving newtype (Read, Eq, Ord, Enum, Num, Serialize)
+  deriving stock (Show, Read, Generic)
+  deriving newtype (Eq, Ord, Enum, Num, Serialize)

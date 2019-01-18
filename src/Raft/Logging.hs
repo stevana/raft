@@ -159,9 +159,9 @@ logCritical = logWithSeverity Critical
 logAndPanic :: RaftLogger v m => Text -> m a
 logAndPanic msg = do
   runRaftLoggerT $ logCritical msg
-  panic msg
+  panic ("logAndPanic: " <> msg)
 
 logAndPanicIO :: (RaftLogger v m, MonadIO m) => LogCtx -> Text -> m a
 logAndPanicIO logCtx msg = do
   logCriticalIO logCtx msg
-  panic msg
+  panic ("logAndPanicIO: " <> msg)

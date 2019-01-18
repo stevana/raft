@@ -37,6 +37,7 @@ import System.Random (mkStdGen, newStdGen)
 import TestUtils
 
 import Raft
+import Raft.Log
 import Raft.Client
 
 import Data.Time.Clock.System (getSystemTime)
@@ -137,6 +138,7 @@ modifyNodeState nid f =
 
 instance RaftPersist RaftTestM where
   type RaftPersistError RaftTestM = RaftTestError
+  initializePersistentState = pure (Right ())
   writePersistentState pstate' = do
     nid <- askSelfNodeId
     fmap Right $ modify $ \testState ->
@@ -163,6 +165,11 @@ instance RaftSendClient RaftTestM Store StoreCmd where
     case Map.lookup cid clientRespChans of
       Nothing -> panic "Failed to find client id in environment"
       Just clientRespChan -> atomically (writeTChan clientRespChan cr)
+
+instance RaftInitLog RaftTestM StoreCmd where
+  type RaftInitLogError RaftTestM = RaftTestError
+  -- No log initialization needs to be done here, everything is in memory.
+  initializeLog _ = pure (Right ())
 
 instance RaftWriteLog RaftTestM StoreCmd where
   type RaftWriteLogError RaftTestM = RaftTestError

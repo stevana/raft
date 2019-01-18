@@ -8,6 +8,7 @@ import qualified Data.Set as Set
 import qualified Data.Map.Merge.Lazy as Merge
 
 import Raft
+import Raft.Config
 
 isRaftLeader :: RaftNodeState v -> Bool
 isRaftLeader (RaftNodeState rns) = isLeader rns
@@ -59,18 +60,21 @@ testConfig0 = NodeConfig
   , configNodeIds = nodeIds
   , configElectionTimeout = pairMsToMicroS (150, 300)
   , configHeartbeatTimeout = msToMicroS 50
+  , configStorageState = New
   }
 testConfig1 = NodeConfig
   { configNodeId = node1
   , configNodeIds = nodeIds
   , configElectionTimeout = pairMsToMicroS (150, 300)
   , configHeartbeatTimeout = msToMicroS 50
+  , configStorageState = New
   }
 testConfig2 = NodeConfig
   { configNodeId = node2
   , configNodeIds = nodeIds
   , configElectionTimeout = pairMsToMicroS (150, 300)
   , configHeartbeatTimeout = msToMicroS 50
+  , configStorageState = New
   }
 
 -- | Zip maps using function. Throws away items left and right

@@ -1,6 +1,5 @@
 name:                libraft
 synopsis:            Raft consensus algorithm
-description:         Raft consensus algorithm
 category:            Distributed Systems
 version:             0.1.1.0
 github:              "adjoint-io/raft"
@@ -12,10 +11,6 @@ copyright:           "2018 Adjoint Inc."
 extra-source-files:
 - README.md
 - ChangeLog.md
-
-# Metadata used when publishing your package
-# synopsis:            Short description of your package
-# category:            Web
 
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
@@ -49,6 +44,8 @@ dependencies:
 - monad-control
 - transformers-base
 - atomic-write
+- postgresql-simple
+- file-embed
 
 default-extensions:
   NoImplicitPrelude

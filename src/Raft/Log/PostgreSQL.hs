@@ -15,6 +15,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Raft.Log.PostgreSQL (
+  RaftPostgresT(..),
   runRaftPostgresT,
   runRaftPostgresM,
 
@@ -42,7 +43,10 @@ import Data.Serialize (Serialize)
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.Types (Identifier(..))
 
+import Raft.Client
+import Raft.RPC
 import Raft.Log
+import Raft.Persistent
 import Raft.Types
 
 data RaftPostgresEnv = RaftPostgresEnv
@@ -150,6 +154,26 @@ instance (Serialize v, MonadIO m, MonadConc m) => RaftDeleteLog (RaftPostgresT m
         execute conn "DELETE FROM entries WHERE entryIndex >= ?" (Only idx)
 
 --------------------------------------------------------------------------------
+-- Inherited Raft instances
+--------------------------------------------------------------------------------
+
+instance RaftPersist m => RaftPersist (RaftPostgresT m) where
+  type RaftPersistError (RaftPostgresT m) = RaftPersistError m
+  initializePersistentState = lift initializePersistentState
+
+instance (Monad m, RaftSendRPC m v) => RaftSendRPC (RaftPostgresT m) v where
+  sendRPC nid msg = lift (sendRPC nid msg)
+
+instance (Monad m, RaftRecvRPC m v) => RaftRecvRPC (RaftPostgresT m) v where
+  type RaftRecvRPCError (RaftPostgresT m) v = RaftRecvRPCError m v
+  receiveRPC = lift receiveRPC
+
+instance (Monad m, RaftSendClient m sm v) => RaftSendClient (RaftPostgresT m) sm v where
+  sendClient clientId = lift . sendClient clientId
+
+instance (Monad m, RaftRecvClient m v) => RaftRecvClient (RaftPostgresT m) v where
+  type RaftRecvClientError (RaftPostgresT m) v = RaftRecvClientError m v
+  receiveClient = lift receiveClient
 
 --------------------------------------------------------------------------------
 

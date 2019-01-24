@@ -54,7 +54,15 @@ jobs:
      
       - run: 
           name: Run tests for libraft
-          command: stack test --no-terminal
+          command: |
+            echo 0 > raft_tests_error_code
+            (stack test --no-terminal --system-ghc) || echo $? > raft_tests_error_code
+            mkdir /tmp/raft-test-logs 
+            cp -r /tmp/raft-log* /tmp/raft-test-logs
+            exit $(cat raft_tests_error_code)
+
+      - store_artifacts:
+          path: /tmp/raft-test-logs
       
 workflows:
   version: 2

@@ -31,36 +31,9 @@ import Raft.Types
 import Raft.Logging (RaftLogger, runRaftLoggerT, RaftLoggerT(..), LogMsg)
 import qualified Raft.Logging as Logging
 
---------------------------------------------------------------------------------
--- State Machine
---------------------------------------------------------------------------------
-
--- | Interface to handle commands in the underlying state machine. Functional
---dependency permitting only a single state machine command to be defined to
---update the state machine.
-class RSMP sm v | sm -> v where
-  data RSMPError sm v
-  type RSMPCtx sm v = ctx | ctx -> sm v
-  applyCmdRSMP :: RSMPCtx sm v -> sm -> v -> Either (RSMPError sm v) sm
-
-class (Monad m, RSMP sm v) => RSM sm v m | m sm -> v where
-  validateCmd :: v -> m (Either (RSMPError sm v) ())
-  askRSMPCtx :: m (RSMPCtx sm v)
-
-applyEntryRSM :: RSM sm v m => sm -> Entry v -> m (Either (RSMPError sm v) sm)
-applyEntryRSM sm e  =
-  case entryValue e of
-    NoValue -> pure (Right sm)
-    EntryValue v -> do
-      res <- validateCmd v
-      case res of
-        Left err -> pure (Left err)
-        Right () -> do
-          ctx <- askRSMPCtx
-          pure (applyCmdRSMP ctx sm v)
 
 --------------------------------------------------------------------------------
--- Raft Monad
+-- Raft Transition Monad
 --------------------------------------------------------------------------------
 
 tellAction :: Action sm v -> TransitionM sm v ()

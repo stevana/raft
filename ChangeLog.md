@@ -1,6 +1,22 @@
 # Changelog for raft
 
-## 0.1.2
+## 0.2.0.0
+
+- Feature: Client requests are now cached by the current leader such that duplicate
+  client requests are not serviced
+- Bug Fix: Fix issue in concurrent timer not resetting properly when the timeout
+  was set to values under 500ms
+- Feature: Client read requests can now query entries by index or range of
+  indices
+- Improvement: Raft nodes now only write to disk if the state changes during
+  handling of events
+- Feature: Users can now specify what severity of log messages should be logged
+- Bug Fix: Receiving all data from a socket in the RaftSocketT monad
+  transformer RaftRecvX typeclass instances inducing a deadlock has been
+  rewritten
+- Feature: A PostgreSQL backend has been added for storage of log entries
+
+## 0.1.2.0
 
 - Added a heartbeat broadcast by leader on read requests from client to ensure
   that the node is leader before responding to client
@@ -11,10 +27,10 @@
 - Added quickcheck-state-machine tests for black-box testing of the raft-example
   client program
 
-## 0.1.1
+## 0.1.1.0
 
 - Fixed MonadFail constraints for GHC 8.6
 
-## 0.1
+## 0.1.0.0
 
 - Initial release.

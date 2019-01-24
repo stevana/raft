@@ -93,6 +93,9 @@ import Raft.Types
 {- This is the interface with which Raft nodes interact with client programs -}
 
 -- | Interface for Raft nodes to send messages to clients
+--
+-- TODO It would be really nice if 'RSMP' was a superclass, but currently this
+-- can't happen because of cyclic imports.
 class RaftSendClient m sm v where
   sendClient :: ClientId -> ClientResponse sm v -> m ()
 

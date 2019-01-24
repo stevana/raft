@@ -172,16 +172,16 @@ committed by a leader to the state machine will eventually be replicated on
 every node in the network at the same index.
 
 As the only part of the internal event loop that needs to be specified manually,
-We ask users of our library to provide an instance of the state machine `RSMP`
+We ask users of our library to provide an instance of the state machine `RaftStateMachinePure`
 typeclass. This typeclass relates a state machine type to a command type
-and a single type class function `applyCmdRSMP`, a pure function that
+and a single type class function `applyCmdRaftStateMachinePure`, a pure function that
 should return the result of applying the command to the initial state machine.
 
 ```haskell
-class RSMP sm v | sm -> v where
-  data RSMPError sm v
-  type RSMPCtx sm v = ctx | ctx -> sm v
-  applyCmdRSMP :: RSMPCtx sm v -> sm -> v -> Either (RSMPError sm v) sm
+class RaftStateMachinePure sm v | sm -> v where
+  data RaftStateMachinePureError sm v
+  type RaftStateMachinePureCtx sm v = ctx | ctx -> sm v
+  applyCmdRaftStateMachinePure :: RaftStateMachinePureCtx sm v -> sm -> v -> Either (RaftStateMachinePureError sm v) sm
 ```
 
 Everything else related to the core event handling loop is not exposed to
@@ -325,21 +325,24 @@ have further insight.
 2) In separate terminals, run some raft nodes:
 
     The format of the cmd line invocation is:
-    ``` raft-example node <fresh/existing> <node-id> <peer-1-node-id> ... <peer-n-node-id> ```
+    ``` 
+    $ raft-example node <fresh/existing> <file/postgres> <node-id> <peer-1-node-id> ... <peer-n-node-id> 
+    
+    ```
 
     We are going to run a network of three nodes:
 
     - On terminal 1:
 
-    ```$ stack exec raft-example node fresh localhost:3001 localhost:3002 localhost:3003```
+    ```$ stack exec raft-example node fresh file localhost:3001 localhost:3002 localhost:3003```
 
     - On terminal 2:
 
-    ```$ stack exec raft-example node fresh localhost:3002 localhost:3001 localhost:3003```
+    ```$ stack exec raft-example node fresh file localhost:3002 localhost:3001 localhost:3003```
 
     - On terminal 3:
 
-    ```$ stack exec raft-example node fresh localhost:3003 localhost:3001 localhost:3002```
+    ```$ stack exec raft-example node fresh file localhost:3003 localhost:3001 localhost:3002```
 
     The first node spawned should become candidate once its election's timer
     times out and request votes to other nodes. It will then become the leader,
@@ -349,8 +352,16 @@ have further insight.
     **Note:** If you want to run a raft example node with _existing_ persistent data,
     pass the `existing` command line option to the `raft-example` program instead
     of `fresh`:
-
+    
     ```$ stack exec raft-example node existing ...```
+
+
+    **Note:** The example also runs using a PostgreSQL database as long as a
+    user 'libraft_test' with password 'libraft_test' exists in your local
+    postgresql installation. For ease of experimentation, if such a user does
+    not exist, create it like so:
+
+    ```$ sudo -su postgres psql -U postgres -c "CREATE USER libraft_test WITH CREATEDB PASSWORD 'libraft_test';"```
 
 3) Run a client:
 ```$ stack exec raft-example client```
@@ -395,17 +406,18 @@ together](https://github.com/adjoint-io/raft#putting-it-all-together)
 
 ### Define the state machine
 
-The only requirement for our state machine is to instantiate the state machine `RSMP`
+The only requirement for our state machine is to instantiate the state machine `RaftStateMachinePure`
 type class.
 
 ```haskell
 -- | Interface to handle commands in the underlying state machine. Functional
 --dependency permitting only a single state machine command to be defined to
 --update the state machine.
-class RSMP sm v | sm -> v where
-  data RSMPError sm v
-  type RSMPCtx sm v = ctx | ctx -> sm v
-  applyCmdRSMP :: RSMPCtx sm v -> sm -> v -> Either (RSMPError sm v) sm
+class RaftStateMachinePure sm v | sm -> v where
+  data RaftStateMachinePureError sm v
+  type RaftStateMachinePureCtx sm v = ctx | ctx -> sm v
+  rsmTransition :: RaftStateMachinePureCtx sm v -> sm -> v -> Either (RaftStateMachinePureError sm v) sm
+  
 ```
 
 In our [example](https://github.com/adjoint-io/raft/blob/master/app/Main.hs) we
@@ -451,10 +463,21 @@ As explained in the [Persistent
 State](https://github.com/adjoint-io/raft#persistent-state) section above, we
 will create instances for `RaftReadLog`, `RaftWriteLog` and
 `RaftDeleteLog` to specify how we will read, write and
-delete log entries, as well as `RaftPersist`.
+delete log entries, as well as `RaftPersist`. There are actually several data
+that must be stored on disk; 1) the data the raft paper calls "persistent data"
+and 2) the log entries of the node.
 
-We provide an implementation that stores persistent data on files in
-[FileStore.hs](https://github.com/adjoint-io/raft/blob/master/src/Examples/Raft/FileStore.hs)
+We provide an implementation that stores the persistent data in a file in
+[src/Examples/Raft/FileStore/Persistent.hs](https://github.com/adjoint-io/raft/blob/master/src/Examples/Raft/FileStore/Persistent.hs)
+
+An example of storing log entries in a single file (for ease of implementation
+in lieu of good performance for reads/writes) can be found in
+[src/Examples/Raft/FileStore/Log.hs](https://github.com/adjoint-io/raft/blob/master/src/Examples/Raft/FileStore/Log.hs)
+
+Lastly, a more "production ready" example of log entry storage using a
+PostgreSQL database can be found in [src/Raft/Log/PostgreSQL.hs](https://github.com/adjoint-io/raft/blob/master/src/Raft/Log/PostgreSQL.hs).
+This implementation is used in our `quickcheck-state-machine` model testing
+module and is thus thoroughly tested. 
 
 ### Putting it all together
 
@@ -475,7 +498,16 @@ derive our Raft type classes.
 
 # Test suite dependencies
 
-The test suite depends on libfiu (commonly installed with package `fiu-utils` ), which it uses to simulate network failures.
+The test suite depends on libfiu (commonly installed with package `fiu-utils`), 
+which it uses to simulate network failures. In addition, the test suite also
+depends on libpq-dev and postgresql. Furthermore, in order to successfully run
+the model tests (which will run autmatically when executing `stack test`, but
+fail immediately with "Failed to spawn node), you will have to run the following
+command:
+
+```
+$ sudo -su postgres psql -U postgres -c "CREATE USER libraft_test WITH CREATEDB PASSWORD 'libraft_test';" 
+```
 
 # References
 

@@ -1,7 +1,7 @@
 name:                libraft
 synopsis:            Raft consensus algorithm
 category:            Distributed Systems
-version:             0.1.1.0
+version:             0.2.0.0
 github:              "adjoint-io/raft"
 license:             BSD3
 author:              "Adjoint Inc."

@@ -46,7 +46,6 @@ import Raft.Client
 import Database.PostgreSQL.Simple
 
 import qualified Examples.Raft.Socket.Client as RS
-import qualified Examples.Raft.Socket.Node as RS
 import Examples.Raft.Socket.Node
 import qualified Examples.Raft.Socket.Common as RS
 import Examples.Raft.FileStore.Log
@@ -70,18 +69,18 @@ instance S.Serialize StoreCmd
 
 type Store = Map Var Natural
 
-instance RSMP Store StoreCmd where
-  data RSMPError Store StoreCmd = StoreError Text deriving (Show)
-  type RSMPCtx Store StoreCmd = ()
+instance RaftStateMachinePure Store StoreCmd where
+  data RaftStateMachinePureError Store StoreCmd = StoreError Text deriving (Show)
+  type RaftStateMachinePureCtx Store StoreCmd = ()
 
-  applyCmdRSMP _ store cmd =
+  rsmTransition _ store cmd =
     Right $ case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
-instance (Monad m, sm ~ Store, v ~ StoreCmd, RSMP sm v) => RSM sm v (RaftExampleM m sm v) where
+instance (Monad m, sm ~ Store, v ~ StoreCmd, RaftStateMachinePure sm v) => RaftStateMachine (RaftExampleM m sm v) sm v where
   validateCmd _ = pure (Right ())
-  askRSMPCtx = pure ()
+  askRaftStateMachinePureCtx = pure ()
 
 --------------------
 -- Raft instances --

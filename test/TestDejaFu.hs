@@ -59,17 +59,17 @@ type Store = Map Var Natural
 
 data StoreCtx = StoreCtx
 
-instance RSMP Store StoreCmd where
-  data RSMPError Store StoreCmd = StoreError Text deriving (Show)
-  type RSMPCtx Store StoreCmd = StoreCtx
-  applyCmdRSMP _ store cmd =
+instance RaftStateMachinePure Store StoreCmd where
+  data RaftStateMachinePureError Store StoreCmd = StoreError Text deriving (Show)
+  type RaftStateMachinePureCtx Store StoreCmd = StoreCtx
+  rsmTransition _ store cmd =
     Right $ case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
-instance RSM Store StoreCmd RaftTestM where
+instance RaftStateMachine RaftTestM Store StoreCmd where
   validateCmd _ = pure (Right ())
-  askRSMPCtx = pure StoreCtx
+  askRaftStateMachinePureCtx = pure StoreCtx
 
 type TestEventChan = EventChan ConcIO StoreCmd
 type TestEventChans = Map NodeId TestEventChan

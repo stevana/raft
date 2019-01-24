@@ -109,7 +109,5 @@ acceptConnections host port = do
             atomically $ writeTChan nsMsgQueue msg
 
 newSock :: HostName -> ServiceName -> IO Socket
-newSock host port = do
-  (sock, _) <- bindSock (Host host) port
-  listenSock sock 2048
-  pure sock
+newSock host port =
+  listen (Host host) port (pure . fst)

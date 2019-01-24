@@ -23,7 +23,7 @@ dependencies:
 - mtl
 - containers
 - text
-- concurrency
+- concurrency >= 1.3.0.0 && < 1.7.0.0
 - transformers
 - exceptions
 - cereal
@@ -79,10 +79,10 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - dejafu
+    - dejafu >= 1.0.0.0 && < 2.0.0.0
     - hunit-dejafu
     - libraft
-    - process
+    - process >= 1.6.3.0 && < 1.7.0.0
     - QuickCheck
     - quickcheck-state-machine
     - tasty

@@ -46,6 +46,7 @@ import Database.PostgreSQL.Simple.Types (Identifier(..))
 import Raft.Client
 import Raft.RPC
 import Raft.Log
+import Raft.StateMachine
 import Raft.Persistent
 import Raft.Types
 
@@ -160,6 +161,8 @@ instance (Serialize v, MonadIO m, MonadConc m) => RaftDeleteLog (RaftPostgresT m
 instance RaftPersist m => RaftPersist (RaftPostgresT m) where
   type RaftPersistError (RaftPostgresT m) = RaftPersistError m
   initializePersistentState = lift initializePersistentState
+  readPersistentState = lift readPersistentState
+  writePersistentState = lift . writePersistentState
 
 instance (Monad m, RaftSendRPC m v) => RaftSendRPC (RaftPostgresT m) v where
   sendRPC nid msg = lift (sendRPC nid msg)
@@ -174,6 +177,10 @@ instance (Monad m, RaftSendClient m sm v) => RaftSendClient (RaftPostgresT m) sm
 instance (Monad m, RaftRecvClient m v) => RaftRecvClient (RaftPostgresT m) v where
   type RaftRecvClientError (RaftPostgresT m) v = RaftRecvClientError m v
   receiveClient = lift receiveClient
+
+instance RaftStateMachine m sm v => RaftStateMachine (RaftPostgresT m) sm v where
+  validateCmd = lift . validateCmd
+  askRaftStateMachinePureCtx = lift askRaftStateMachinePureCtx
 
 --------------------------------------------------------------------------------
 

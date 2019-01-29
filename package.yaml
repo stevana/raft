@@ -11,6 +11,7 @@ copyright:           "2018 Adjoint Inc."
 extra-source-files:
 - README.md
 - ChangeLog.md
+- postgres/entries.sql
 
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
@@ -51,7 +52,7 @@ default-extensions:
   NoImplicitPrelude
   OverloadedStrings
   LambdaCase
-
+  
 library:
   source-dirs: src
   ghc-options:

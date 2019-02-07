@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -11,7 +12,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Raft.Log.PostgreSQL (
@@ -28,10 +28,10 @@ module Raft.Log.PostgreSQL (
 
 ) where
 
-import Protolude hiding (atomically, try, bracket, catches, tryReadTMVar, newEmptyTMVar, STM, Handler)
+import Protolude hiding (Handler, catches, bracket)
 
-import Control.Concurrent.Classy (STM, MonadConc, atomically)
-import Control.Concurrent.Classy.STM.TMVar
+import Control.Concurrent.STM.TMVar
+
 import Control.Monad.Catch
 import Control.Monad.Fail
 import Control.Monad.Trans.Class
@@ -45,6 +45,7 @@ import Database.PostgreSQL.Simple.Types (Identifier(..))
 
 import Raft.Client
 import Raft.RPC
+import Raft.Monad
 import Raft.Log
 import Raft.StateMachine
 import Raft.Persistent
@@ -52,23 +53,31 @@ import Raft.Types
 
 data RaftPostgresEnv = RaftPostgresEnv
   { raftPostgresConnInfo :: ConnectInfo
-  , raftPostgresConn :: TMVar (STM IO) Connection
+  , raftPostgresConn :: TMVar Connection
   }
 
 -- | A single threaded PostgreSQL storage monad transformer
 newtype RaftPostgresT m a = RaftPostgresT { unRaftPostgresT :: ReaderT RaftPostgresEnv m a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadFail, MonadReader RaftPostgresEnv, Alternative, MonadPlus, MonadTrans)
 
-deriving newtype instance MonadThrow m => MonadThrow (RaftPostgresT m)
 deriving newtype instance MonadCatch m => MonadCatch (RaftPostgresT m)
+deriving newtype instance MonadThrow m => MonadThrow (RaftPostgresT m)
 deriving newtype instance MonadMask m => MonadMask (RaftPostgresT m)
-deriving newtype instance MonadConc m => MonadConc (RaftPostgresT m)
 
+initRaftPostgresEnv :: MonadIO m => ConnectInfo -> m RaftPostgresEnv
+initRaftPostgresEnv connInfo =
+  RaftPostgresEnv connInfo <$> liftIO (atomically newEmptyTMVar)
+
+-- | Run a RaftPostgresT computation by supplying the database connection info
 runRaftPostgresT :: MonadIO m => ConnectInfo -> RaftPostgresT m a -> m a
 runRaftPostgresT connInfo m = do
   connTMVar <- liftIO $ atomically newEmptyTMVar
   let postgresEnv = RaftPostgresEnv connInfo connTMVar
   runReaderT (unRaftPostgresT m) postgresEnv
+
+runRaftPostgresT' :: MonadIO m => RaftPostgresEnv -> RaftPostgresT m a -> m a
+runRaftPostgresT' raftPostgresEnv =
+  flip runReaderT raftPostgresEnv . unRaftPostgresT
 
 type RaftPostgresM = RaftPostgresT IO
 
@@ -86,7 +95,7 @@ instance Exception (RaftPostgresError)
 -- | Helper function for RaftXLog typeclasses such that we can easily catch all
 -- @PGError@s and connect to the DB if we haven't already
 withRaftPostgresConn
-  :: (MonadIO m, MonadConc m)
+  :: MonadIO m
   => (Connection -> IO (Either RaftPostgresError a))
   -> RaftPostgresT m (Either RaftPostgresError a)
 withRaftPostgresConn f = do
@@ -113,6 +122,10 @@ withRaftPostgresConn f = do
         Right (Left err) -> pure (Left err)
         Right (Right a) -> pure (Right a)
 
+--------------------------------------------------------------------------------
+-- Raft instances
+--------------------------------------------------------------------------------
+
 instance (MonadIO m) => RaftInitLog (RaftPostgresT m) v where
   type RaftInitLogError (RaftPostgresT m) = RaftPostgresError
   initializeLog _ = do
@@ -123,7 +136,7 @@ instance (MonadIO m) => RaftInitLog (RaftPostgresT m) v where
         connTMVar <- asks raftPostgresConn
         fmap Right . liftIO . atomically $ putTMVar connTMVar conn
 
-instance (Typeable v, Serialize v, MonadIO m, MonadConc m) => RaftReadLog (RaftPostgresT m) v where
+instance (Typeable v, Serialize v, MonadIO m) => RaftReadLog (RaftPostgresT m) v where
   type RaftReadLogError (RaftPostgresT m) = RaftPostgresError
   readLogEntry idx =
     withRaftPostgresConn $ \conn ->
@@ -140,14 +153,14 @@ instance (Typeable v, Serialize v, MonadIO m, MonadConc m) => RaftReadLog (RaftP
       Right . fmap rowTypeToEntry . listToMaybe <$>
         query_ conn "SELECT * FROM entries ORDER BY entryIndex DESC LIMIT 1"
 
-instance (Serialize v, MonadIO m, MonadConc m) => RaftWriteLog (RaftPostgresT m) v where
+instance (Serialize v, MonadIO m) => RaftWriteLog (RaftPostgresT m) v where
   type RaftWriteLogError (RaftPostgresT m) = RaftPostgresError
   writeLogEntries entries =
     withRaftPostgresConn $ \conn ->
       fmap Right . void $
         executeMany conn "INSERT INTO entries VALUES (?,?,?,?,?,?)" (map entryToRowType (toList entries))
 
-instance (Serialize v, MonadIO m, MonadConc m) => RaftDeleteLog (RaftPostgresT m) v where
+instance (Serialize v, MonadIO m) => RaftDeleteLog (RaftPostgresT m) v where
   type RaftDeleteLogError (RaftPostgresT m) = RaftPostgresError
   deleteLogEntriesFrom idx =
     withRaftPostgresConn $ \conn ->
@@ -181,6 +194,18 @@ instance (Monad m, RaftRecvClient m v) => RaftRecvClient (RaftPostgresT m) v whe
 instance RaftStateMachine m sm v => RaftStateMachine (RaftPostgresT m) sm v where
   validateCmd = lift . validateCmd
   askRaftStateMachinePureCtx = lift askRaftStateMachinePureCtx
+
+instance MonadRaftChan v m => MonadRaftChan v (RaftPostgresT m) where
+  type RaftEventChan v (RaftPostgresT m) = RaftEventChan v m
+  readRaftChan = lift . readRaftChan
+  writeRaftChan chan = lift . writeRaftChan chan
+  newRaftChan = lift (newRaftChan @v @m)
+
+instance (MonadIO m, MonadRaftFork m) => MonadRaftFork (RaftPostgresT m) where
+  type RaftThreadId (RaftPostgresT m) = RaftThreadId m
+  raftFork m = do
+    raftPostgresEnv <- ask
+    lift $ raftFork (runRaftPostgresT' raftPostgresEnv m)
 
 --------------------------------------------------------------------------------
 
@@ -288,5 +313,4 @@ setupDB connInfo = tryPG $ do
     createEntriesTable conn
     pure conn
   where
-
     dbName = connectDatabase connInfo

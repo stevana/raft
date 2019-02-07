@@ -1,192 +1,143 @@
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
-{-# LANGUAGE DefaultSignatures #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# Language ConstraintKinds #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 
 module Raft.Monad where
 
-import Protolude hiding (pass)
+import Protolude hiding (STM, TChan, readTChan, writeTChan, newTChan, atomically)
 
-import Control.Arrow ((&&&))
-import Control.Monad.RWS
+import Control.Monad.Catch
+import Control.Monad.Fail
+import Control.Monad.Trans.Class
+import qualified Control.Monad.Conc.Class as Conc
 
-import qualified Data.Set as Set
+import Control.Concurrent.Classy.STM.TChan
 
-import Raft.Action
-import Raft.Client
 import Raft.Config
 import Raft.Event
-import Raft.Log
-import Raft.Persistent
+import Raft.Logging
 import Raft.NodeState
-import Raft.RPC
-import Raft.Types
-import Raft.Logging (RaftLogger, runRaftLoggerT, RaftLoggerT(..), LogMsg)
-import qualified Raft.Logging as Logging
 
+import Test.DejaFu.Conc (ConcIO)
+import qualified Test.DejaFu.Types as TDT
 
 --------------------------------------------------------------------------------
--- Raft Transition Monad
+-- Raft Monad Class
 --------------------------------------------------------------------------------
 
-tellAction :: Action sm v -> TransitionM sm v ()
-tellAction a = tell [a]
+type MonadRaft v m = (MonadRaftChan v m, MonadRaftFork m)
 
-tellActions :: [Action sm v] -> TransitionM sm v ()
-tellActions as = tell as
+-- | The typeclass specifying the datatype used as the core event channel in the
+-- main raft event loop, as well as functions for creating, reading, and writing
+-- to the channel, and how to fork a computation that performs some action with
+-- the channel.
+--
+-- Note: This module uses AllowAmbiguousTypes which removes the necessity for
+-- Proxy value arguments in lieu of TypeApplication. For example:
+--
+-- @
+--   newRaftChan @v
+-- @
+--
+-- instead of
+--
+-- @
+--   newRaftChan (Proxy :: Proxy v)
+-- @
+class Monad m => MonadRaftChan v m where
+  type RaftEventChan v m
+  readRaftChan :: RaftEventChan v m -> m (Event v)
+  writeRaftChan :: RaftEventChan v m -> Event v -> m ()
+  newRaftChan :: m (RaftEventChan v m)
 
-data TransitionEnv sm v = TransitionEnv
-  { nodeConfig :: NodeConfig
-  , stateMachine :: sm
-  , nodeState :: RaftNodeState v
+instance MonadRaftChan v IO where
+  type RaftEventChan v IO = TChan (Conc.STM IO) (Event v)
+  readRaftChan = Conc.atomically . readTChan
+  writeRaftChan chan = Conc.atomically . writeTChan chan
+  newRaftChan = Conc.atomically newTChan
+
+instance MonadRaftChan v ConcIO where
+  type RaftEventChan v ConcIO = TChan (Conc.STM ConcIO) (Event v)
+  readRaftChan = Conc.atomically . readTChan
+  writeRaftChan chan = Conc.atomically . writeTChan chan
+  newRaftChan = Conc.atomically newTChan
+
+-- | The typeclass encapsulating the concurrency operations necessary for the
+-- implementation of the main event handling loop.
+--
+-- This typeclass should not be manually defined.
+class Monad m => MonadRaftFork m where
+  type RaftThreadId m
+  raftFork :: m () -> m (RaftThreadId m)
+
+instance MonadRaftFork IO where
+  type RaftThreadId IO = Protolude.ThreadId
+  raftFork = forkIO
+
+instance MonadRaftFork ConcIO where
+  type RaftThreadId ConcIO = TDT.ThreadId
+  raftFork = Conc.fork
+
+--------------------------------------------------------------------------------
+-- Raft Monad
+--------------------------------------------------------------------------------
+
+-- | The raft server environment composed of the concurrent variables used in
+-- the effectful raft layer.
+data RaftEnv v m = RaftEnv
+  { eventChan :: RaftEventChan v m
+  , resetElectionTimer :: m ()
+  , resetHeartbeatTimer :: m ()
+  , raftNodeConfig :: RaftNodeConfig
+  , raftNodeLogCtx :: LogCtx
   }
 
-newtype TransitionM sm v a = TransitionM
-  { unTransitionM :: RaftLoggerT v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) a
-  } deriving (Functor, Applicative, Monad)
+newtype RaftT v m a = RaftT
+  { unRaftT :: ReaderT (RaftEnv v m) (StateT (RaftNodeState v) m) a
+  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState v), MonadFail, Alternative, MonadPlus)
 
-instance MonadWriter [Action sm v] (TransitionM sm v) where
-  tell = TransitionM . RaftLoggerT . tell
-  listen = TransitionM . RaftLoggerT . listen . unRaftLoggerT . unTransitionM
-  pass = TransitionM . RaftLoggerT . pass . unRaftLoggerT . unTransitionM
+instance MonadTrans (RaftT v) where
+  lift = RaftT . lift . lift
 
-instance MonadReader (TransitionEnv sm v) (TransitionM sm v) where
-  ask = TransitionM . RaftLoggerT $ ask
-  local f = TransitionM . RaftLoggerT . local f . unRaftLoggerT . unTransitionM
+deriving instance MonadIO m => MonadIO (RaftT v m)
+deriving instance MonadThrow m => MonadThrow (RaftT v m)
+deriving instance MonadCatch m => MonadCatch (RaftT v m)
 
-instance MonadState PersistentState (TransitionM sm v) where
-  get = TransitionM . RaftLoggerT $ lift get
-  put = TransitionM . RaftLoggerT . lift . put
+instance MonadRaftFork m => MonadRaftFork (RaftT v m) where
+  type RaftThreadId (RaftT v m) = RaftThreadId m
+  raftFork m = do
+    raftEnv <- ask
+    raftState <- get
+    lift $ raftFork (runRaftT raftState raftEnv m)
 
-instance RaftLogger v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) where
-  loggerCtx = asks ((configNodeId . nodeConfig) &&& nodeState)
+instance Monad m => RaftLogger v (RaftT v m) where
+  loggerCtx = (,) <$> asks (configNodeId . raftNodeConfig) <*> get
 
-runTransitionM
-  :: TransitionEnv sm v
-  -> PersistentState
-  -> TransitionM sm v a
-  -> ((a, [LogMsg]), PersistentState, [Action sm v])
-runTransitionM transEnv persistentState transitionM =
-  runRWS (runRaftLoggerT (unTransitionM transitionM)) transEnv persistentState
+runRaftT
+  :: Monad m
+  => RaftNodeState v
+  -> RaftEnv v m
+  -> RaftT v m a
+  -> m a
+runRaftT raftNodeState raftEnv =
+  flip evalStateT raftNodeState . flip runReaderT raftEnv . unRaftT
 
-askNodeId :: TransitionM sm v NodeId
-askNodeId = asks (configNodeId . nodeConfig)
-
---------------------------------------------------------------------------------
--- Handlers
---------------------------------------------------------------------------------
-
-type RPCHandler ns sm r v = (RPCType r v, Show v) => NodeState ns v -> NodeId -> r -> TransitionM sm v (ResultState ns v)
-type TimeoutHandler ns sm v = Show v => NodeState ns v -> Timeout -> TransitionM sm v (ResultState ns v)
-type ClientReqHandler ns sm v = Show v => NodeState ns v -> ClientRequest v -> TransitionM sm v (ResultState ns v)
-
---------------------------------------------------------------------------------
--- RWS Helpers
---------------------------------------------------------------------------------
-
-broadcast :: SendRPCAction v -> TransitionM sm v ()
-broadcast sendRPC = do
-  selfNodeId <- askNodeId
-  tellAction =<<
-    flip BroadcastRPC sendRPC
-      <$> asks (Set.filter (selfNodeId /=) . configNodeIds . nodeConfig)
-
-send :: NodeId -> SendRPCAction v -> TransitionM sm v ()
-send nodeId sendRPC = tellAction (SendRPC nodeId sendRPC)
-
--- | Resets the election timeout.
-resetElectionTimeout :: TransitionM sm v ()
-resetElectionTimeout = tellAction (ResetTimeoutTimer ElectionTimeout)
-
-resetHeartbeatTimeout :: TransitionM sm v ()
-resetHeartbeatTimeout = tellAction (ResetTimeoutTimer HeartbeatTimeout)
-
-redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM sm v ()
-redirectClientToLeader clientId currentLeader = do
-  let clientRedirRespSpec = ClientRedirRespSpec currentLeader
-  tellAction (RespondToClient clientId clientRedirRespSpec)
-
-respondClientRead :: ClientId -> ClientReadReq -> TransitionM sm v ()
-respondClientRead clientId readReq = do
-  readReqData <-
-    case readReq of
-      ClientReadEntries res -> pure (ClientReadRespSpecEntries res)
-      ClientReadStateMachine -> do
-        sm <- asks stateMachine
-        pure (ClientReadRespSpecStateMachine sm)
-  tellAction . RespondToClient clientId . ClientReadRespSpec $ readReqData
-
-
-respondClientWrite :: ClientId -> Index -> SerialNum -> TransitionM sm v ()
-respondClientWrite cid entryIdx sn =
-  tellAction (RespondToClient cid (ClientWriteRespSpec entryIdx sn))
-
-respondClientRedir :: ClientId -> CurrentLeader -> TransitionM sm v ()
-respondClientRedir cid cl =
-  tellAction (RespondToClient cid (ClientRedirRespSpec cl))
-
-appendLogEntries :: Show v => Seq (Entry v) -> TransitionM sm v ()
-appendLogEntries = tellAction . AppendLogEntries
-
-updateClientReqCacheFromIdx :: Index -> TransitionM sm v ()
-updateClientReqCacheFromIdx = tellAction . UpdateClientReqCacheFrom
-
---------------------------------------------------------------------------------
-
-startElection
-  :: Index
-  -> Index
-  -> LastLogEntry v
-  -> ClientWriteReqCache
-  -> TransitionM sm v (CandidateState v)
-startElection commitIndex lastApplied lastLogEntry clientReqCache  = do
-    incrementTerm
-    voteForSelf
-    resetElectionTimeout
-    broadcast =<< requestVoteMessage
-    selfNodeId <- askNodeId
-    -- Return new candidate state
-    pure CandidateState
-      { csCommitIndex = commitIndex
-      , csLastApplied = lastApplied
-      , csVotes = Set.singleton selfNodeId
-      , csLastLogEntry = lastLogEntry
-      , csClientReqCache = clientReqCache
-      }
-  where
-    requestVoteMessage = do
-      term <- currentTerm <$> get
-      selfNodeId <- askNodeId
-      pure $ SendRequestVoteRPC
-        RequestVote
-          { rvTerm = term
-          , rvCandidateId = selfNodeId
-          , rvLastLogIndex = lastLogEntryIndex lastLogEntry
-          , rvLastLogTerm = lastLogEntryTerm lastLogEntry
-          }
-
-    incrementTerm = do
-      psNextTerm <- incrTerm . currentTerm <$> get
-      modify $ \pstate ->
-        pstate { currentTerm = psNextTerm
-               , votedFor = Nothing
-               }
-
-    voteForSelf = do
-      selfNodeId <- askNodeId
-      modify $ \pstate ->
-        pstate { votedFor = Just selfNodeId }
-
---------------------------------------------------------------------------------
+------------------------------------------------------------------------------
 -- Logging
---------------------------------------------------------------------------------
+------------------------------------------------------------------------------
 
-logInfo = TransitionM . Logging.logInfo
-logDebug = TransitionM . Logging.logDebug
+logDebug :: MonadIO m => Text -> RaftT v m ()
+logDebug msg = flip logDebugIO msg =<< asks raftNodeLogCtx
+
+logCritical :: MonadIO m => Text -> RaftT v m ()
+logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogCtx
+
+logAndPanic :: MonadIO m => Text -> RaftT v m a
+logAndPanic msg = flip logAndPanicIO msg =<< asks raftNodeLogCtx

@@ -45,7 +45,7 @@ client0 = ClientId "client0"
 nodeIds :: NodeIds
 nodeIds = Set.fromList [node0, node1, node2]
 
-testConfigs :: [NodeConfig]
+testConfigs :: [RaftNodeConfig]
 testConfigs = [testConfig0, testConfig1, testConfig2]
 
 msToMicroS :: Num n => n -> n
@@ -54,22 +54,22 @@ msToMicroS = (1000 *)
 pairMsToMicroS :: Num n => (n, n) -> (n, n)
 pairMsToMicroS = bimap msToMicroS msToMicroS
 
-testConfig0, testConfig1, testConfig2 :: NodeConfig
-testConfig0 = NodeConfig
+testConfig0, testConfig1, testConfig2 :: RaftNodeConfig
+testConfig0 = RaftNodeConfig
   { configNodeId = node0
   , configNodeIds = nodeIds
   , configElectionTimeout = pairMsToMicroS (150, 300)
   , configHeartbeatTimeout = msToMicroS 50
   , configStorageState = New
   }
-testConfig1 = NodeConfig
+testConfig1 = RaftNodeConfig
   { configNodeId = node1
   , configNodeIds = nodeIds
   , configElectionTimeout = pairMsToMicroS (150, 300)
   , configHeartbeatTimeout = msToMicroS 50
   , configStorageState = New
   }
-testConfig2 = NodeConfig
+testConfig2 = RaftNodeConfig
   { configNodeId = node2
   , configNodeIds = nodeIds
   , configElectionTimeout = pairMsToMicroS (150, 300)

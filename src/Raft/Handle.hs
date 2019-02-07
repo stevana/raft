@@ -19,7 +19,7 @@ import qualified Raft.Leader as Leader
 
 import Raft.Action
 import Raft.Event
-import Raft.Monad
+import Raft.Transition
 import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC

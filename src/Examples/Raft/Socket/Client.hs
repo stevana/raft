@@ -61,7 +61,6 @@ deriving instance MonadSTM m => MonadSTM (RaftClientRespChanT s v m)
 deriving instance MonadThrow m => MonadThrow (RaftClientRespChanT s v m)
 deriving instance MonadCatch m => MonadCatch (RaftClientRespChanT s v m)
 deriving instance MonadMask m => MonadMask (RaftClientRespChanT s v m)
-deriving instance MonadConc m => MonadConc (RaftClientRespChanT s v m)
 
 -- This annoying instance is because of the Haskeline library, letting us use a
 -- custom monad transformer stack as the base monad of 'InputT'. IMO it should
@@ -115,7 +114,7 @@ runRaftSocketClientM cid nids respChan rscm = do
     $ rscm
 
 clientResponseServer
-  :: forall s v m. (S.Serialize s, S.Serialize v, MonadIO m, MonadConc m)
+  :: forall s v m. (S.Serialize s, S.Serialize v, MonadIO m)
   => N.HostName
   -> N.ServiceName
   -> RaftClientRespChanT s v m ()

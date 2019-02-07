@@ -190,11 +190,26 @@ the commands to update it, and how to perform those updates.
 
 ### Effectful Layers
 
-In the protocol, there are two main components that need access to global
+In this Raft implementation, there are four components that need access to global
 state and system resources. Firstly, raft nodes must maintain some persistent
 state for efficient and correct recovery from network outages or partitions.
 Secondly, raft nodes need to send messages to other raft nodes for the network
-(the replicated state machine) to be operational.
+(the replicated state machine) to be operational. Next, library users must
+specify what event channel datastructure to use. Finally, the programmer must
+provide a way to fork threads and run a list of effectful actions concurrently.
+
+The reasons for the latter two design decisions-- requiring the programmer to
+provide an event channel type and new/read/writeChannel primitives, a way to
+fork an effectful action to run concurrently, and a way to run a list of actions
+concurrently-- is a result of property based concurrency testing that we do,
+found in `test/TestDejaFu.hs`. In order to test the system as a whole, to run
+several nodes concurrently and test invariants about the system such as the
+absence of deadlocks, we must be able to swap out the base monad for the
+`ConcIO` monad, which has implementations of concurrency primitives that act
+deterministically. This allows us to test that the raft nodes run correctly in 
+a wide space of thread interleavings giving us more confidence that our code is
+correct, assuming "correct" implementations of the `MonadRaftAsync` and
+`MonadRaftChan` typeclasses.
 
 #### Persistent State
 
@@ -248,6 +263,8 @@ class Monad m => RaftReadLog m v where
     :: Exception (RaftReadLogError m)
     => m (Either (RaftReadLogError m) (Maybe (Entry v)))
 ```
+
+---
 
 To read and write the `PersistentData` type (the remaining persistent data that
 is not log entries), we ask the user to use the following `RaftPersist`
@@ -312,7 +329,95 @@ class RaftRecvClient m v where
 We have written a default implementation for network sockets over TCP in
 [src/Examples/Raft/Socket](https://github.com/adjoint-io/raft/blob/master/src/Examples/Raft/Socket)
 
-# Run example
+### Event Channel
+
+The core of the effectful layers of this Raft implmentation is the _event
+channel_. Since different data channels have different performance, we ask the
+programmer to supply an implementation of such a channel via yet another type
+class and type family:
+
+```haskell
+class Monad m => MonadRaftChan v m where
+  type RaftEventChan v m
+  readRaftChan :: RaftEventChan v m -> m (Event v)
+  writeRaftChan :: RaftEventChan v m -> Event v -> m ()
+  newRaftChan :: m (RaftEventChan v m)
+```
+
+On spawning a raft node, the program will create a new event channel using
+`newRaftChan`. Then, the event producers will be forked; These event producers
+will use the aforementioned typeclasses like `RaftRecvRPC` and `RaftRecvClient`
+to wait for messages from other raft nodes or clients wishing to contact the
+node. Once a message is received, a message event is constructed from the
+message contents and written to the main event channel via `writeRaftChan`. In
+the main thread, the core event handler will be repeatedly reading events from
+the event channel using `readRaftChan` and performing the correct action in
+response to each event.
+
+### Concurrency
+
+The last of the type class instances the programmer must provide for the monad
+they are running the raft node in is a `MonadRaftAsync`, which provides the main
+raft loop with a small set of concurrency primitives; The raft node needs to
+know how to fork actions in the monad, and how to run a list of actions
+concurrently, waiting for all to finish. The former is necessary for the raft
+node to be able to fork its event producers, and the latter is required in order
+to respond to clients and other raft nodes in a timely manner. The typeclass is
+defined as follows:
+
+```haskell
+class Monad m => MonadRaftAsync m where
+  type RaftAsync m :: * -> *
+  raftAsync :: m a -> m (RaftAsync m a)
+  raftMapConcurrently :: Traversable t => (a -> m b) -> t a -> m (t b)
+  raftMapConcurrently_ :: Foldable t => (a -> m b) -> t a -> m ()
+```
+
+The implementation of this typeclass is a bit subtle, and it is advised that
+programmers do not implement it from scratch themselves. A default 
+implementation is provided for the `IO` type using standard concurrency 
+primitives making it easy for the programmer to simply rely on that
+implementation. An example instance of this type class for a custom monad
+transformer stack with `IO` the bottom:
+
+```haskell
+instance MonadRaftAsync MyMonad where
+  type RaftAsync MyMonad = RaftAsync IO
+  raftAsync myMonad = lift $ raftAsync (runMyMonad myMonad) 
+  raftMapConcurrently f as = lift (raftMapConcurrently (runMyMonad . f) as)
+  raftMapConcurrently_ f as = lift (raftMapConcurrently_ (runMyMonad . f) as)
+```
+
+# The Raft Example (`raft-example`)
+
+In this library we provide a full fledged, non-production ready, example
+implementation/s of monad transformers and type class instances for _all_ type
+classes necessary to run a raft node. They can be found in
+`src/Examples/Raft/...` or in `app/Main.hs`:
+
+`RaftExampleT` (found in `app/Main.hs`):
+- `MonadRaftAsync`
+- `MonadRaftChan`
+- `RaftStateMachine`
+
+`RaftSocketT` (found in `src/Examples/Raft/Socket/Node.hs`):
+- `RaftSendRPC`
+- `RaftRecvRPC`
+- `RaftSendClient`
+- `RaftRecvClient`
+
+`RaftLogFileStoreT` (found in `src/Examples/Raft/FileStore/Log.hs`):
+- `RaftReadLog`
+- `RaftWriteLog`
+- `RaftDeleteLog`
+- `RaftInitLog`
+
+`RaftPersistFileStoreT` (found in `src/Examples/Raft/FileStore/Persistent.hs`):
+- `RaftPersistent`
+
+Programmers can use these files and implementations for references when implementing 
+the necessary type class instances for their bespoke monads, or even use some of
+the monad transformers in their own stack!
 
 We provide a complete example of the library where nodes communicate via network
 sockets, and they write their logs on text files. See

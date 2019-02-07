@@ -69,12 +69,14 @@ module Raft.Client
 
 import Protolude hiding (threadDelay, STM, )
 
-import Control.Concurrent.Classy
+import Control.Concurrent.Lifted (threadDelay)
+
 import Control.Monad.Base
 import Control.Monad.Catch
 import Control.Monad.Fail
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Control
+
 
 import qualified Data.Set as Set
 import qualified Data.Serialize as S
@@ -219,8 +221,6 @@ newtype RaftClientT s v m a = RaftClientT
 deriving newtype instance MonadThrow m => MonadThrow (RaftClientT s v m)
 deriving newtype instance MonadCatch m => MonadCatch (RaftClientT s v m)
 deriving newtype instance MonadMask m => MonadMask (RaftClientT s v m)
-deriving newtype instance MonadSTM m => MonadSTM (RaftClientT s v m)
-deriving newtype instance MonadConc m => MonadConc (RaftClientT s v m)
 
 instance MonadTrans (RaftClientT s v) where
   lift = RaftClientT . lift . lift
@@ -232,6 +232,10 @@ instance MonadTransControl (RaftClientT s v) where
     liftWith = defaultLiftWith2 RaftClientT unRaftClientT
     restoreT = defaultRestoreT2 RaftClientT
 
+-- These instances are for use of the 'timeout' function that requires a
+-- MonadBaseControl IO constraint.
+--
+-- TODO is this still necessary after the removal of MonadConc?
 instance (MonadBaseControl IO m) => MonadBaseControl IO (RaftClientT s v m) where
     type StM (RaftClientT s v m) a = ComposeSt (RaftClientT s v) m a
     liftBaseWith    = defaultLiftBaseWith
@@ -274,7 +278,7 @@ deriving instance (Show s, Show v, Show (RaftClientSendError m v), Show (RaftCli
 
 -- | Send a read request to the curent leader and wait for a response
 clientRead
-  :: (Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
+  :: (RaftClientSend m v, RaftClientRecv m s v)
   => ClientReadReq
   -> RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s v))
 clientRead crr = do
@@ -298,7 +302,7 @@ clientReadFrom nid crr = do
 
 -- | 'clientRead' but with a timeout
 clientReadTimeout
-  :: (MonadBaseControl IO m, Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
+  :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s v)
   => Int
   -> ClientReadReq
   -> RaftClientT s v m (Either (RaftClientError s v m) (ClientReadResp s v))
@@ -306,7 +310,7 @@ clientReadTimeout t = clientTimeout "clientRead" t . clientRead
 
 -- | Send a write request to the current leader and wait for a response
 clientWrite
-  :: (Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
+  :: (RaftClientSend m v, RaftClientRecv m s v)
   => v
   -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
 clientWrite cmd = do
@@ -329,7 +333,7 @@ clientWriteTo nid cmd = do
     Right _ -> clientRecvWrite
 
 clientWriteTimeout
-  :: (MonadBaseControl IO m, Show (RaftClientSendError m v), RaftClientSend m v, RaftClientRecv m s v)
+  :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s v)
   => Int
   -> v
   -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
@@ -351,7 +355,7 @@ clientTimeout fnm t r = do
 -- | Given a blocking client send/receive, retry if the received value is not
 -- expected
 retryOnRedirect
-  :: MonadConc m
+  :: MonadBaseControl IO m
   => RaftClientT s v m (Either (RaftClientError s v m) r)
   -> RaftClientT s v m (Either (RaftClientError s v m) r)
 retryOnRedirect action = do
@@ -369,7 +373,7 @@ retryOnRedirect action = do
 
 -- | Send a read request to the current leader. Nonblocking.
 clientSendRead
-  :: (Show (RaftClientSendError m v), RaftClientSend m v)
+  :: RaftClientSend m v
   => ClientReadReq
   -> RaftClientT s v m (Either (RaftClientSendError m v) ())
 clientSendRead crr =
@@ -387,7 +391,7 @@ clientSendReadTo nid crr =
 
 -- | Send a write request to the current leader. Nonblocking.
 clientSendWrite
-  :: (Show (RaftClientSendError m v), RaftClientSend m v)
+  :: RaftClientSend m v
   => v
   -> RaftClientT s v m (Either (RaftClientSendError m v) ())
 clientSendWrite v = do
@@ -407,7 +411,7 @@ clientSendWriteTo nid v =
 
 -- | Send a request to the current leader. Nonblocking.
 clientSend
-  :: (Show (RaftClientSendError m v), RaftClientSend m v)
+  :: (RaftClientSend m v)
   => ClientRequest v
   -> RaftClientT s v m (Either (RaftClientSendError m v) ())
 clientSend creq = do

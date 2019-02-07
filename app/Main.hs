@@ -2,25 +2,23 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
-import Protolude hiding
-  ( MVar, putMVar, takeMVar, newMVar, newEmptyMVar, readMVar
-  , atomically, STM(..), Chan, newTVar, readTVar, writeTVar
-  , newChan, writeChan, readChan
-  , threadDelay, killThread, TVar(..)
-  , catch, handle, takeWhile, takeWhile1, (<|>)
-  , lift
-  )
+import Protolude
 
-import Control.Concurrent.Classy hiding (catch)
+import Control.Concurrent.Lifted (fork)
+import Control.Concurrent.STM.TChan
+
 import Control.Monad.Fail
 import Control.Monad.Catch
 import Control.Monad.Trans.Class
@@ -28,7 +26,7 @@ import Control.Monad.Trans.Class
 import qualified Data.Map as Map
 import qualified Data.List as L
 import qualified Data.Set as Set
-import qualified Data.Serialize as S
+import Data.Serialize (Serialize)
 
 import Numeric.Natural
 
@@ -41,6 +39,7 @@ import Raft
 import Raft.Config
 import Raft.Log
 import Raft.Log.PostgreSQL
+import Raft.Monad
 import Raft.Client
 
 import Database.PostgreSQL.Simple
@@ -63,9 +62,8 @@ type Var = ByteString
 data StoreCmd
   = Set Var Natural
   | Incr Var
-  deriving (Show, Generic)
-
-instance S.Serialize StoreCmd
+  deriving stock (Show, Generic)
+  deriving anyclass Serialize
 
 type Store = Map Var Natural
 
@@ -78,85 +76,32 @@ instance RaftStateMachinePure Store StoreCmd where
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
-instance (Monad m, sm ~ Store, v ~ StoreCmd, RaftStateMachinePure sm v) => RaftStateMachine (RaftExampleM m sm v) sm v where
+--------------------------------------------------------------------------------
+-- Raft Example Monad Transformer
+--------------------------------------------------------------------------------
+
+newtype RaftExampleT m a = RaftExampleT { unRaftExampleT :: m a }
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadFail, MonadMask, MonadCatch, MonadThrow)
+
+instance MonadTrans RaftExampleT where
+  lift = RaftExampleT
+
+instance (Monad m, RaftStateMachinePure Store StoreCmd) => RaftStateMachine (RaftExampleT m) Store StoreCmd where
   validateCmd _ = pure (Right ())
   askRaftStateMachinePureCtx = pure ()
 
---------------------
--- Raft instances --
---------------------
+instance MonadRaftChan v m => MonadRaftChan v (RaftExampleT m) where
+  type RaftEventChan v (RaftExampleT m) = RaftEventChan v m
+  readRaftChan = lift . readRaftChan
+  writeRaftChan chan = lift . writeRaftChan chan
+  newRaftChan = lift (newRaftChan @v @m)
 
-data NodeEnv sm = NodeEnv
-  { nEnvStore :: TVar (STM IO) sm
-  , nEnvNodeId :: NodeId
-  }
+instance (MonadIO m, MonadRaftFork m) => MonadRaftFork (RaftExampleT m) where
+  type RaftThreadId (RaftExampleT m) = RaftThreadId m
+  raftFork m = lift $ raftFork (runRaftExampleT m)
 
-newtype RaftExampleM m sm v a = RaftExampleM {
-    unRaftExampleM :: ReaderT (NodeEnv sm) (RaftSocketT v (RaftPersistFileStoreT m)) a
-  }
-
-deriving instance Functor m => Functor (RaftExampleM m sm v)
-deriving instance Applicative m => Applicative (RaftExampleM m sm v)
-deriving instance Monad m => Monad (RaftExampleM m sm v)
-deriving instance MonadIO m => MonadIO (RaftExampleM m sm v)
-deriving instance MonadFail m => MonadFail (RaftExampleM m sm v)
-deriving instance Monad m => MonadReader (NodeEnv sm) (RaftExampleM m sm v)
-deriving instance Alternative m => Alternative (RaftExampleM m sm v)
-deriving instance MonadPlus m => MonadPlus (RaftExampleM m sm v)
-
-deriving instance MonadThrow m => MonadThrow (RaftExampleM m sm v)
-deriving instance MonadCatch m => MonadCatch (RaftExampleM m sm v)
-deriving instance MonadMask m => MonadMask (RaftExampleM m sm v)
-deriving instance MonadConc m => MonadConc (RaftExampleM m sm v)
-
-runRaftExampleM
-  :: (MonadIO m, MonadConc m)
-  => NodeEnv sm
-  -> NodeSocketEnv v
-  -> RaftPersistFile
-  -> RaftExampleM m sm v a
-  -> m a
-runRaftExampleM nodeEnv nodeSocketEnv raftPersistFile raftExampleM =
-  flip runReaderT raftPersistFile . unRaftPersistFileStoreT $
-    flip runReaderT nodeSocketEnv . unRaftSocketT $
-        flip runReaderT nodeEnv $ unRaftExampleM raftExampleM
-
-instance (MonadIO m, MonadConc m) => RaftSendClient (RaftExampleM m Store StoreCmd) Store StoreCmd where
-  sendClient cid msg = (RaftExampleM . lift) $ sendClient cid msg
-
-instance (MonadIO m, MonadConc m) => RaftRecvClient (RaftExampleM m Store StoreCmd) StoreCmd where
-  type RaftRecvClientError (RaftExampleM m Store StoreCmd) StoreCmd = Text
-  receiveClient = RaftExampleM $ lift receiveClient
-
-instance (MonadIO m, MonadConc m) => RaftSendRPC (RaftExampleM m Store StoreCmd) StoreCmd where
-  sendRPC nid msg = (RaftExampleM . lift) $ sendRPC nid msg
-
-instance (MonadIO m, MonadConc m) => RaftRecvRPC (RaftExampleM m Store StoreCmd) StoreCmd where
-  type RaftRecvRPCError (RaftExampleM m Store StoreCmd) StoreCmd = Text
-  receiveRPC = RaftExampleM $ lift receiveRPC
-
-instance (MonadIO m, MonadConc m) => RaftPersist (RaftExampleM m Store StoreCmd) where
-  type RaftPersistError (RaftExampleM m Store StoreCmd) = RaftPersistFileStoreError
-  initializePersistentState = RaftExampleM $ lift $ lift initializePersistentState
-  writePersistentState ps = RaftExampleM $ lift $ lift $ writePersistentState ps
-  readPersistentState = RaftExampleM $ lift $ lift $ readPersistentState
-
-instance (MonadConc m, RaftInitLog m StoreCmd) => RaftInitLog (RaftExampleM m Store StoreCmd) StoreCmd where
-  type RaftInitLogError (RaftExampleM m Store StoreCmd) = RaftInitLogError m
-  initializeLog p = RaftExampleM $ lift $ lift $ lift $ initializeLog p
-
-instance RaftWriteLog m StoreCmd => RaftWriteLog (RaftExampleM m Store StoreCmd) StoreCmd where
-  type RaftWriteLogError (RaftExampleM m Store StoreCmd) = RaftWriteLogError m
-  writeLogEntries entries = RaftExampleM $ lift $ lift $ lift $ writeLogEntries entries
-
-instance RaftReadLog m StoreCmd => RaftReadLog (RaftExampleM m Store StoreCmd) StoreCmd where
-  type RaftReadLogError (RaftExampleM m Store StoreCmd) = RaftReadLogError m
-  readLogEntry idx = RaftExampleM $ lift $ lift $ lift $ readLogEntry idx
-  readLastLogEntry = RaftExampleM $ lift $ lift $ lift $ readLastLogEntry
-
-instance RaftDeleteLog m StoreCmd => RaftDeleteLog (RaftExampleM m Store StoreCmd) StoreCmd where
-  type RaftDeleteLogError (RaftExampleM m Store StoreCmd) = RaftDeleteLogError m
-  deleteLogEntriesFrom idx = RaftExampleM $ lift $ lift $ lift $ deleteLogEntriesFrom idx
+runRaftExampleT :: RaftExampleT m a -> m a
+runRaftExampleT = unRaftExampleT
 
 --------------------
 -- Client console --
@@ -177,7 +122,7 @@ instance RaftDeleteLog m StoreCmd => RaftDeleteLog (RaftExampleM m Store StoreCm
 
 newtype ConsoleM a = ConsoleM
   { unConsoleM :: HaskelineT (RS.RaftSocketClientM Store StoreCmd) a
-  } deriving (Functor, Applicative, Monad, MonadIO)
+  } deriving newtype (Functor, Applicative, Monad, MonadIO)
 
 liftRSCM = ConsoleM . lift
 
@@ -222,7 +167,7 @@ data LogStorage = FileStore | PostgreSQL [Char]
 
 main :: IO ()
 main = do
-    args <- (toS <$>) <$> getArgs
+    args :: [ByteString] <- fmap toS <$> getArgs
     case args of
       ["client"] -> clientMain
       ("node":"fresh":"file":nid:nids) -> initNode New FileStore (nid:nids)
@@ -236,44 +181,51 @@ main = do
           New -> cleanStorage nodeDir storageType
           Existing -> pure ()
         nSocketEnv <- initSocketEnv nid
-        nEnv <- initNodeEnv nid
         nPersistFile <- RaftPersistFile <$> persistentFilePath nid
+
+        let (host, port) = RS.nidToHostPort (toS nid)
+        -- Launch the server receiving connections from raft other nodes
+        fork $ flip runReaderT nSocketEnv . unRaftSocketT $
+          acceptConnections host port
+
         case storageType of
           FileStore -> do
             nLogsFile <- RaftLogFile <$> logsFilePath nid
-            runRaftLogFileStoreT nLogsFile $
-              runRaftNode' nSocketEnv nEnv nPersistFile
+            runRaftExampleT $
+              runRaftLogFileStoreT nLogsFile $
+                runRaftNode' nSocketEnv nPersistFile
           PostgreSQL dbName -> do
             let pgConnInfo = raftDatabaseConnInfo "libraft_test" "libraft_test" dbName
-            runRaftPostgresM pgConnInfo $
-              runRaftNode' nSocketEnv nEnv nPersistFile
+            runRaftExampleT $
+              runRaftPostgresT pgConnInfo $
+                runRaftNode' nSocketEnv nPersistFile
      where
         runRaftNode'
-          :: ( MonadIO m, MonadConc m, MonadFail m
-             , RaftInitLog m StoreCmd, RaftReadLog m StoreCmd, RaftWriteLog m StoreCmd
-             , RaftDeleteLog m StoreCmd, Exception (RaftInitLogError m), Exception (RaftReadLogError m)
-             , Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m), Typeable m
+          :: ( MonadIO m, MonadRaft StoreCmd m, MonadFail m, MonadMask m
+             , MonadRaft StoreCmd m, RaftStateMachine m Store StoreCmd
+             , RaftInitLog m StoreCmd, RaftReadLog m StoreCmd, RaftWriteLog m StoreCmd, RaftDeleteLog m StoreCmd
+             , Exception (RaftInitLogError m), Exception (RaftReadLogError m)
+             , Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m)
+             , Typeable m
              )
           => NodeSocketEnv StoreCmd
-          -> NodeEnv Store
           -> RaftPersistFile
           -> m ()
-        runRaftNode' nSocketEnv nEnv nPersistFile =
-          runRaftExampleM nEnv nSocketEnv nPersistFile $ do
-            let allNodeIds = Set.fromList (nid : nids)
-            let (host, port) = RS.nidToHostPort (toS nid)
-            let nodeConfig = NodeConfig
-                              { configNodeId = toS nid
-                              , configNodeIds = allNodeIds
-                              -- These are recommended timeouts from the original
-                              -- raft paper and the ARC report.
-                              , configElectionTimeout = (150000, 300000)
-                              , configHeartbeatTimeout = 50000
-                              , configStorageState = storageState
-                              }
-            fork $ RaftExampleM $ lift (acceptConnections host port)
-            electionTimerSeed <- liftIO randomIO
-            runRaftNode nodeConfig (LogCtx LogStdout Debug) electionTimerSeed (mempty :: Store)
+        runRaftNode' nSocketEnv nPersistFile =
+          runRaftSocketT nSocketEnv $
+            runRaftPersistFileStoreT nPersistFile $ do
+              let allNodeIds = Set.fromList (nid : nids)
+              let nodeConfig = RaftNodeConfig
+                                { configNodeId = toS nid
+                                , configNodeIds = allNodeIds
+                                -- These are recommended timeouts from the original
+                                -- raft paper and the ARC report.
+                                , configElectionTimeout = (150000, 300000)
+                                , configHeartbeatTimeout = 50000
+                                , configStorageState = storageState
+                                }
+              electionTimerSeed <- liftIO randomIO
+              runRaftNode nodeConfig (LogCtx LogStdout Debug) electionTimerSeed (mempty :: Store)
 
     cleanStorage :: FilePath -> LogStorage -> IO ()
     cleanStorage nodeDir ls = do
@@ -294,15 +246,6 @@ main = do
     logsFilePath nid = do
       tmpDir <- Directory.getTemporaryDirectory
       pure (tmpDir ++ "/" ++ toS nid ++ "/" ++ "logs")
-
-    initNodeEnv :: NodeId -> IO (NodeEnv Store)
-    initNodeEnv nid = do
-      let (host, port) = RS.nidToHostPort (toS nid)
-      storeTVar <- atomically (newTVar mempty)
-      pure NodeEnv
-        { nEnvStore = storeTVar
-        , nEnvNodeId = toS host <> ":" <> toS port
-        }
 
     initSocketEnv :: NodeId -> IO (NodeSocketEnv v)
     initSocketEnv nid = do

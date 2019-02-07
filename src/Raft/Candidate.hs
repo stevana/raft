@@ -33,7 +33,7 @@ import Raft.Action
 import Raft.Persistent
 import Raft.Log
 import Raft.Config
-import Raft.Monad
+import Raft.Transition
 import Raft.Types
 
 --------------------------------------------------------------------------------

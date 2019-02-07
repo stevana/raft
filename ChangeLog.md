@@ -1,5 +1,19 @@
 # Changelog for raft
 
+## 0.3.0.0
+
+- API change: `runRaftNode` now requires the monad it runs in to provide an
+  instance of the `MonadRaftAsync` and `MonadRaftChan` in the `Raft.Monad`
+  module in lieu of the previously necessary `MonadConc` instance.
+- API change: Removed the `MonadConc` constraint on all example monad
+  transformers and implemented inherited `MonadRaftChan` and `MonadRaftAsync` 
+  instances 
+- API change: Removed the `MonadConc` const
+- API change: Renamed the old `Raft.Monad` module to `Raft.Transtion` and moved the 
+  `RaftT` monad transformer from `Raft.hs` to the `Raft.Monad` module
+- Improvement: Rework example monad `RaftExampleT` for simplicity
+
+
 ## 0.2.0.0
 
 - Feature: Client requests are now cached by the current leader such that duplicate

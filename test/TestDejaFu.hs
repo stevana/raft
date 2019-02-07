@@ -37,8 +37,9 @@ import System.Random (mkStdGen, newStdGen)
 import TestUtils
 
 import Raft
-import Raft.Log
 import Raft.Client
+import Raft.Log
+import Raft.Monad
 
 import Data.Time.Clock.System (getSystemTime)
 
@@ -71,7 +72,7 @@ instance RaftStateMachine RaftTestM Store StoreCmd where
   validateCmd _ = pure (Right ())
   askRaftStateMachinePureCtx = pure StoreCtx
 
-type TestEventChan = EventChan ConcIO StoreCmd
+type TestEventChan = RaftEventChan StoreCmd RaftTestM
 type TestEventChans = Map NodeId TestEventChan
 
 type TestClientRespChan = TChan (STM ConcIO) (ClientResponse Store StoreCmd)
@@ -81,7 +82,7 @@ type TestClientRespChans = Map ClientId TestClientRespChan
 data TestNodeEnv = TestNodeEnv
   { testNodeEventChans :: TestEventChans
   , testClientRespChans :: TestClientRespChans
-  , testNodeConfig :: NodeConfig
+  , testRaftNodeConfig :: RaftNodeConfig
   }
 
 -- | Node specific state
@@ -113,7 +114,7 @@ instance Exception RaftTestError
 throwTestErr = throw . RaftTestError
 
 askSelfNodeId :: RaftTestM NodeId
-askSelfNodeId = asks (configNodeId . testNodeConfig)
+askSelfNodeId = asks (configNodeId . testRaftNodeConfig)
 
 lookupNodeEventChan :: NodeId -> RaftTestM TestEventChan
 lookupNodeEventChan nid = do
@@ -207,6 +208,19 @@ instance RaftReadLog RaftTestM StoreCmd where
       Empty -> pure (Right Nothing)
       _ :|> lastEntry -> pure (Right (Just lastEntry))
 
+instance MonadRaftChan StoreCmd RaftTestM where
+  type RaftEventChan StoreCmd RaftTestM = TChan (STM ConcIO) (Event StoreCmd)
+  readRaftChan = RaftTestM . lift . lift . readRaftChan
+  writeRaftChan chan = RaftTestM . lift . lift . writeRaftChan chan
+  newRaftChan = RaftTestM . lift . lift $ newRaftChan
+
+instance MonadRaftFork RaftTestM where
+  type RaftThreadId RaftTestM = RaftThreadId ConcIO
+  raftFork m = do
+    testNodeEnv <- ask
+    testNodeStates <- get
+    RaftTestM . lift . lift $ raftFork (runRaftTestM testNodeEnv testNodeStates m)
+
 --------------------------------------------------------------------------------
 
 data TestClientEnv = TestClientEnv
@@ -272,9 +286,9 @@ runTestNode testEnv testState = do
       runRaftT initRaftNodeState raftEnv $
         handleEventLoop (mempty :: Store)
   where
-    nid = configNodeId (testNodeConfig testEnv)
+    nid = configNodeId (testRaftNodeConfig testEnv)
     Just eventChan = Map.lookup nid (testNodeEventChans testEnv)
-    raftEnv = RaftEnv eventChan dummyTimer dummyTimer (testNodeConfig testEnv) NoLogs
+    raftEnv = RaftEnv eventChan dummyTimer dummyTimer (testRaftNodeConfig testEnv) NoLogs
     dummyTimer = pure ()
 
 forkTestNodes :: [TestNodeEnv] -> TestNodeStates -> ConcIO [ThreadId ConcIO]

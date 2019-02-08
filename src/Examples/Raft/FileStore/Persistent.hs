@@ -133,6 +133,6 @@ instance MonadRaftChan v m => MonadRaftChan v (RaftPersistFileStoreT m) where
 
 instance (MonadIO m, MonadRaftFork m) => MonadRaftFork (RaftPersistFileStoreT m) where
   type RaftThreadId (RaftPersistFileStoreT m) = RaftThreadId m
-  raftFork m = do
+  raftFork r m = do
     persistFile <- ask
-    lift $ raftFork (runRaftPersistFileStoreT persistFile m)
+    lift $ raftFork r (runRaftPersistFileStoreT persistFile m)

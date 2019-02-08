@@ -216,10 +216,10 @@ instance MonadRaftChan StoreCmd RaftTestM where
 
 instance MonadRaftFork RaftTestM where
   type RaftThreadId RaftTestM = RaftThreadId ConcIO
-  raftFork m = do
+  raftFork r m = do
     testNodeEnv <- ask
     testNodeStates <- get
-    RaftTestM . lift . lift $ raftFork (runRaftTestM testNodeEnv testNodeStates m)
+    RaftTestM . lift . lift $ raftFork r (runRaftTestM testNodeEnv testNodeStates m)
 
 --------------------------------------------------------------------------------
 

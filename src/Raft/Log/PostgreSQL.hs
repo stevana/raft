@@ -203,9 +203,9 @@ instance MonadRaftChan v m => MonadRaftChan v (RaftPostgresT m) where
 
 instance (MonadIO m, MonadRaftFork m) => MonadRaftFork (RaftPostgresT m) where
   type RaftThreadId (RaftPostgresT m) = RaftThreadId m
-  raftFork m = do
+  raftFork r m = do
     raftPostgresEnv <- ask
-    lift $ raftFork (runRaftPostgresT' raftPostgresEnv m)
+    lift $ raftFork r (runRaftPostgresT' raftPostgresEnv m)
 
 --------------------------------------------------------------------------------
 

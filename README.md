@@ -208,7 +208,7 @@ absence of deadlocks, we must be able to swap out the base monad for the
 `ConcIO` monad, which has implementations of concurrency primitives that act
 deterministically. This allows us to test that the raft nodes run correctly in 
 a wide space of thread interleavings giving us more confidence that our code is
-correct, assuming "correct" implementations of the `MonadRaftAsync` and
+correct, assuming "correct" implementations of the `MonadRaftFork` and
 `MonadRaftChan` typeclasses.
 
 #### Persistent State
@@ -357,20 +357,22 @@ response to each event.
 ### Concurrency
 
 The last of the type class instances the programmer must provide for the monad
-they are running the raft node in is a `MonadRaftAsync`, which provides the main
-raft loop with a small set of concurrency primitives; The raft node needs to
-know how to fork actions in the monad, and how to run a list of actions
-concurrently, waiting for all to finish. The former is necessary for the raft
-node to be able to fork its event producers, and the latter is required in order
-to respond to clients and other raft nodes in a timely manner. The typeclass is
-defined as follows:
+they are running the raft node in is a `MonadRaftFork`, which provides the main
+raft loop with the ability to fork a concurrent action; The raft node needs to
+know how to fork actions in the monad. This is necessary for the raft node to 
+be able to fork its event producers, and run other actions concurrently; e.g.
+a leader responding to all followers at the same time during a heartbeat RPC
+broadcast. The typeclass is defined as follows:
 
 ```haskell
-class Monad m => MonadRaftAsync m where
-  type RaftAsync m :: * -> *
-  raftAsync :: m a -> m (RaftAsync m a)
-  raftMapConcurrently :: Traversable t => (a -> m b) -> t a -> m (t b)
-  raftMapConcurrently_ :: Foldable t => (a -> m b) -> t a -> m ()
+-- | The typeclass encapsulating the concurrency operations necessary for the
+-- implementation of the main event handling loop.
+class Monad m => MonadRaftFork m where
+  type RaftThreadId m
+  raftFork
+    :: RaftThreadRole      -- ^ The role of the current thread being forked
+    -> m ()                -- ^ The action to fork
+    -> m (RaftThreadId m)
 ```
 
 The implementation of this typeclass is a bit subtle, and it is advised that
@@ -381,12 +383,18 @@ implementation. An example instance of this type class for a custom monad
 transformer stack with `IO` the bottom:
 
 ```haskell
-instance MonadRaftAsync MyMonad where
-  type RaftAsync MyMonad = RaftAsync IO
-  raftAsync myMonad = lift $ raftAsync (runMyMonad myMonad) 
-  raftMapConcurrently f as = lift (raftMapConcurrently (runMyMonad . f) as)
-  raftMapConcurrently_ f as = lift (raftMapConcurrently_ (runMyMonad . f) as)
+instance MonadRaftFork MyMonad where
+  type RaftThreadId MyMonad = RaftThreadId IO
+  raftFork threadRole myMonad = 
+    lift $ raftFork threadRole (runMyMonad myMonad) 
 ```
+
+The last thing to mention about this typeclass is the `RaftThreadRole` value
+that must be passed to invocations of the `raftFork` function. In some
+applications (and, noteably our concurrency testing suite) thread names can be
+used for debugging and even message passing purposes. For instance of
+`MonadRaftFork` that do not need to distinguish threads by name, simply ignore
+the argument. 
 
 # The Raft Example (`raft-example`)
 
@@ -396,7 +404,7 @@ classes necessary to run a raft node. They can be found in
 `src/Examples/Raft/...` or in `app/Main.hs`:
 
 `RaftExampleT` (found in `app/Main.hs`):
-- `MonadRaftAsync`
+- `MonadRaftFork`
 - `MonadRaftChan`
 - `RaftStateMachine`
 

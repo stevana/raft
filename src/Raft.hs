@@ -168,10 +168,18 @@ runRaftNode nodeConfig@RaftNodeConfig{..} logCtx timerSeed initRaftStateMachine 
   runRaftT initRaftNodeState raftEnv $ do
 
     -- These event producers need access to logging, thus they live in RaftT
-    raftFork . lift $ electionTimeoutTimer @m @v eventChan electionTimer
-    raftFork . lift $ heartbeatTimeoutTimer @m @v eventChan heartbeatTimer
-    raftFork (rpcHandler @m @v eventChan)
-    raftFork (clientReqHandler @m @v eventChan)
+    --
+    -- Note: Changing the roles of these event producers (the strings passed as
+    -- arguments to 'raftFork' should incur a minor (or major?) version bump,
+    -- because some implementations of 'MonadRaftFork' rely on these strings to
+    -- reliably send messages to the event producers (e.g. cloud-haskell
+    -- processes).
+    raftFork (CustomThreadRole "Election Timeout Timer") . lift $
+      electionTimeoutTimer @m @v eventChan electionTimer
+    raftFork (CustomThreadRole "Heartbeat Timeout Timer") . lift $
+      heartbeatTimeoutTimer @m @v eventChan heartbeatTimer
+    raftFork RPCHandler (rpcHandler @m @v eventChan)
+    raftFork ClientRequestHandler (clientReqHandler @m @v eventChan)
 
     -- Start the main event handling loop
     handleEventLoop initRaftStateMachine
@@ -311,16 +319,16 @@ handleAction action = do
       lift (sendRPC nid rpcMsg)
     SendRPCs rpcMap ->
       flip mapM_ (Map.toList rpcMap) $ \(nid, sendRpcAction) ->
-        raftFork $ do
+        raftFork (CustomThreadRole "Send RPC") $ do
           rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
           lift (sendRPC nid rpcMsg)
     BroadcastRPC nids sendRpcAction -> do
       rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
-      mapM_ (raftFork . lift . flip sendRPC rpcMsg) nids
+      mapM_ (raftFork (CustomThreadRole "RPC Broadcast Thread") . lift . flip sendRPC rpcMsg) nids
     RespondToClient cid cr -> do
       clientResp <- mkClientResp cr
       -- TODO log failure if sendClient fails
-      void $ raftFork $ lift $ sendClient cid clientResp
+      void $ raftFork (CustomThreadRole "Respond to Client") $ lift $ sendClient cid clientResp
     ResetTimeoutTimer tout -> do
       case tout of
         ElectionTimeout -> lift . resetElectionTimer =<< ask

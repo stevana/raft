@@ -98,7 +98,7 @@ instance MonadRaftChan v m => MonadRaftChan v (RaftExampleT m) where
 
 instance (MonadIO m, MonadRaftFork m) => MonadRaftFork (RaftExampleT m) where
   type RaftThreadId (RaftExampleT m) = RaftThreadId m
-  raftFork m = lift $ raftFork (runRaftExampleT m)
+  raftFork r m = lift $ raftFork r (runRaftExampleT m)
 
 runRaftExampleT :: RaftExampleT m a -> m a
 runRaftExampleT = unRaftExampleT

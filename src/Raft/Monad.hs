@@ -69,21 +69,28 @@ instance MonadRaftChan v ConcIO where
   writeRaftChan chan = Conc.atomically . writeTChan chan
   newRaftChan = Conc.atomically newTChan
 
+data RaftThreadRole
+  = RPCHandler
+  | ClientRequestHandler
+  | CustomThreadRole Text
+  deriving Show
+
 -- | The typeclass encapsulating the concurrency operations necessary for the
 -- implementation of the main event handling loop.
---
--- This typeclass should not be manually defined.
 class Monad m => MonadRaftFork m where
   type RaftThreadId m
-  raftFork :: m () -> m (RaftThreadId m)
+  raftFork
+    :: RaftThreadRole -- ^ The role of the current thread being forked
+    -> m ()   -- ^ The action to fork
+    -> m (RaftThreadId m)
 
 instance MonadRaftFork IO where
   type RaftThreadId IO = Protolude.ThreadId
-  raftFork = forkIO
+  raftFork _ = forkIO
 
 instance MonadRaftFork ConcIO where
   type RaftThreadId ConcIO = TDT.ThreadId
-  raftFork = Conc.fork
+  raftFork r = Conc.forkN (show r)
 
 --------------------------------------------------------------------------------
 -- Raft Monad
@@ -112,10 +119,10 @@ deriving instance MonadCatch m => MonadCatch (RaftT v m)
 
 instance MonadRaftFork m => MonadRaftFork (RaftT v m) where
   type RaftThreadId (RaftT v m) = RaftThreadId m
-  raftFork m = do
+  raftFork s m = do
     raftEnv <- ask
     raftState <- get
-    lift $ raftFork (runRaftT raftState raftEnv m)
+    lift $ raftFork s (runRaftT raftState raftEnv m)
 
 instance Monad m => RaftLogger v (RaftT v m) where
   loggerCtx = (,) <$> asks (configNodeId . raftNodeConfig) <*> get

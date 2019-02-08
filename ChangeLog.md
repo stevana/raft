@@ -1,5 +1,9 @@
 # Changelog for raft
 
+## 0.4.0.0
+
+- API change: `MonadRaftAsync` is now `MonadRaftFork`, with a simpler API
+
 ## 0.3.0.0
 
 - API change: `runRaftNode` now requires the monad it runs in to provide an

@@ -1,5 +1,14 @@
 # Changelog for raft
 
+## 0.4.1.0
+
+- Improvement: Users can now supply an existing logging function to log internal
+  raft node logs, useful for integration into existing applications.
+- Improvement: The example instances for `RaftClientSend` and
+  `RaftClientRecv` using unix sockets no longer need to fork a server to handle
+  responses from the raft node; the response is sent on the same socket the
+  client opens while sending the request.
+
 ## 0.4.0.0
 
 - API change: `MonadRaftAsync` is now `MonadRaftFork`, with a simpler API

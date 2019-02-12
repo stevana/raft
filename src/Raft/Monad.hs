@@ -103,7 +103,7 @@ data RaftEnv v m = RaftEnv
   , resetElectionTimer :: m ()
   , resetHeartbeatTimer :: m ()
   , raftNodeConfig :: RaftNodeConfig
-  , raftNodeLogCtx :: LogCtx
+  , raftNodeLogCtx :: LogCtx (RaftT v m)
   }
 
 newtype RaftT v m a = RaftT

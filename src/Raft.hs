@@ -148,7 +148,7 @@ runRaftNode
      , Exception (RaftPersistError m)
      )
    => RaftNodeConfig       -- ^ Node configuration
-   -> LogCtx               -- ^ Logs destination
+   -> LogCtx (RaftT v m)   -- ^ Logs destination
    -> Int                  -- ^ Timer seed
    -> sm                   -- ^ Initial state machine state
    -> m ()

@@ -73,17 +73,27 @@ instance MonadException m => MonadException (RaftClientRespChanT s v m) where
         let run' = RunIO (fmap (RaftClientRespChanT . ReaderT . const) . run . flip runReaderT r . unRaftClientRespChanT)
          in fmap (flip runReaderT r . unRaftClientRespChanT) $ f run'
 
-instance (S.Serialize v, MonadIO m) => RaftClientSend (RaftClientRespChanT s v m) v where
+instance (S.Serialize s, S.Serialize v, MonadIO m) => RaftClientSend (RaftClientRespChanT s v m) v where
   type RaftClientSendError (RaftClientRespChanT s v m) v = Text
   raftClientSend nid creq = do
+    respChan <- asks clientRespChan
     let (host,port) = nidToHostPort nid
+        errPrefix = "Failed to send client request: "
     mRes <-
       liftIO $ timeout 100000 $ try $ do
         -- Warning: blocks if socket is allocated by OS, even though the socket
         -- may have been closed by the running process
-        N.connect host port $ \(sock, sockAddr) ->
+        N.connect host port $ \(sock, _sockAddr) -> do
           N.send sock (S.encode (ClientRequestEvent creq))
-    let errPrefix = "Failed to send client request: "
+          mResp <- recvSerialized sock
+          case mResp of
+            Nothing
+              -> pure . Left
+                 $ errPrefix <> "Socket was closed or client server failed to decode message"
+            Just resp
+              -> do
+              atomically $ writeTChan respChan resp
+              pure . pure $ ()
     case mRes of
       Nothing -> pure (Left (errPrefix <> "'connect' timed out"))
       Just (Left (err :: SomeException)) -> pure $ Left (errPrefix <> show err)
@@ -112,21 +122,6 @@ runRaftSocketClientM cid nids respChan rscm = do
     . unRaftClientRespChanT
     . runRaftClientT raftClientEnv raftClientState
     $ rscm
-
-clientResponseServer
-  :: forall s v m. (S.Serialize s, S.Serialize v, MonadIO m)
-  => N.HostName
-  -> N.ServiceName
-  -> RaftClientRespChanT s v m ()
-clientResponseServer host port = do
-  respChan <- asks clientRespChan
-  N.serve (N.Host host) port $ \(sock, _) -> do
-    mBytes <- N.recv sock (4 * 4096)
-    case mBytes of
-      Nothing -> putText "Socket was closed on the other end"
-      Just bytes -> case S.decode bytes of
-        Left err -> putText $ "Failed to decode message: " <> toS err
-        Right cresp -> atomically $ writeTChan respChan cresp
 
 -- | Send a client read request using the example socket interface of RaftSocketClientM
 socketClientRead

@@ -18,6 +18,7 @@ import Protolude
 
 import Control.Concurrent.Lifted (fork)
 import Control.Concurrent.STM.TChan
+import Control.Concurrent.STM.TVar
 
 import Control.Monad.Fail
 import Control.Monad.Catch
@@ -208,7 +209,7 @@ main = do
              , Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m)
              , Typeable m
              )
-          => NodeSocketEnv StoreCmd
+          => NodeSocketEnv Store StoreCmd
           -> RaftPersistFile
           -> m ()
         runRaftNode' nSocketEnv nPersistFile =
@@ -247,13 +248,15 @@ main = do
       tmpDir <- Directory.getTemporaryDirectory
       pure (tmpDir ++ "/" ++ toS nid ++ "/" ++ "logs")
 
-    initSocketEnv :: NodeId -> IO (NodeSocketEnv v)
+    initSocketEnv :: NodeId -> IO (NodeSocketEnv sm v)
     initSocketEnv nid = do
       msgQueue <- atomically newTChan
       clientReqQueue <- atomically newTChan
+      clientReqResps <- atomically $ newTVar Map.empty
       pure NodeSocketEnv
         { nsMsgQueue = msgQueue
         , nsClientReqQueue = clientReqQueue
+        , nsClientReqResps = clientReqResps
         }
 
     mkExampleDir :: NodeId -> IO FilePath
@@ -269,7 +272,6 @@ main = do
       let clientId = ClientId $ RS.hostPortToNid (clientHost, clientPort)
       clientRespChan <- RS.newClientRespChan
       RS.runRaftSocketClientM clientId mempty clientRespChan $ do
-        fork (lift (RS.clientResponseServer clientHost clientPort))
         evalRepl (pure ">>> ") (unConsoleM . handleConsoleCmd) [] Nothing (Word completer) (pure ())
 
     -- Tab Completion: return a completion for partial words entered

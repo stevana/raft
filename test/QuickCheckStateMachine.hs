@@ -25,7 +25,7 @@ import           System.IO                     (BufferMode (NoBuffering),
                                                 hPutStrLn, hSetBuffering,
                                                 openFile)
 import           System.Process                (ProcessHandle, StdStream (CreatePipe, UseHandle),
-                                                callCommand, createProcess_,
+                                                callCommand, createProcess,
                                                 getPid, getProcessExitCode, waitForProcess,
                                                 proc, std_err, std_in, std_out,
                                                 terminateProcess)
@@ -211,7 +211,7 @@ semantics h (SpawnNode port1 p) = do
         _    -> error "semantics: invalid port1"
   let persistence Fresh    = "fresh"
       persistence Existing = "existing"
-  (_, _, _, ph) <- createProcess_ "raft node"
+  (_, _, _, ph) <- createProcess
     (proc "fiu-run" [ "-x", "stack", "exec", "raft-example", "node"
                     , persistence p, "postgres", show port1
                     , "localhost:" ++ show port1
@@ -231,7 +231,7 @@ semantics h (SpawnNode port1 p) = do
 
 semantics h (SpawnClient cport) = do
   hPutStrLn h "Spawning client"
-  (Just hin, Just hout, _, ph) <- createProcess_ "raft client"
+  (Just hin, Just hout, _, ph) <- createProcess
     (proc "stack" [ "exec", "raft-example", "client" ])
      { std_out = CreatePipe
      , std_in  = CreatePipe
@@ -286,15 +286,13 @@ semantics h (Incr chs) = do
 semantics h (BreakConnection (port, ph)) = do
   hPutStrLn h ("Break connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
-  callCommand ("fiu-ctrl -c \"enable name=posix/io/net/send\" " ++ show pid)
-  callCommand ("fiu-ctrl -c \"enable name=posix/io/net/recv\" " ++ show pid)
+  callCommand ("fiu-ctrl -c 'enable name=posix/io/*' " ++ show pid)
   threadDelay 2000000
   return BrokeConnection
 semantics h (FixConnection (port, ph)) = do
   hPutStrLn h ("Fix connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
-  callCommand ("fiu-ctrl -c \"disable name=posix/io/net/send\" " ++ show pid)
-  callCommand ("fiu-ctrl -c \"disable name=posix/io/net/recv\" " ++ show pid)
+  callCommand ("fiu-ctrl -c 'disable name=posix/io/*' " ++ show pid)
   threadDelay 2000000
   return FixedConnection
 

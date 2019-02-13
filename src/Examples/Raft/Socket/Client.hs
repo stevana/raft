@@ -80,7 +80,7 @@ instance (S.Serialize s, S.Serialize v, MonadIO m) => RaftClientSend (RaftClient
     let (host,port) = nidToHostPort nid
         errPrefix = "Failed to send client request: "
     mRes <-
-      liftIO $ timeout 100000 $ try $ do
+      liftIO $ timeout 1000000 $ try $ do
         -- Warning: blocks if socket is allocated by OS, even though the socket
         -- may have been closed by the running process
         N.connect host port $ \(sock, _sockAddr) -> do

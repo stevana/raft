@@ -1,4 +1,4 @@
-resolver: lts-13.3
+resolver: lts-13.7
 
 packages:
 - .
@@ -8,8 +8,7 @@ extra-deps:
 - quickcheck-state-machine-0.4.3
 - tree-diff-0.0.2
 - split-0.2.3.3
+- process-1.6.5.0
 - concurrency-1.6.2.0
 - dejafu-1.12.0.0
 - tasty-dejafu-1.2.1.0
-- hunit-dejafu-1.2.1.0
-- process-1.6.5.0

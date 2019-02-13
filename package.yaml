@@ -24,7 +24,7 @@ dependencies:
 - mtl
 - containers
 - text
-- concurrency >= 1.3.0.0 && < 1.7.0.0
+- concurrency >= 1.3.0.0
 - transformers
 - exceptions
 - cereal
@@ -47,7 +47,7 @@ dependencies:
 - atomic-write
 - postgresql-simple
 - file-embed
-- dejafu
+- dejafu >= 1.12.0.0
 - stm
 - async
 
@@ -83,10 +83,9 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - dejafu >= 1.0.0.0 && < 2.0.0.0
-    - hunit-dejafu
+    - dejafu
     - libraft
-    - process >= 1.6.3.0 && < 1.7.0.0
+    - process >= 1.6.3.0
     - QuickCheck
     - quickcheck-state-machine
     - tasty

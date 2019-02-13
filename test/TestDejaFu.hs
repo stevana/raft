@@ -398,11 +398,11 @@ followerRedirLeader eventChans clientRespChans = do
 
 newLeaderElection :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
 newLeaderElection eventChans clientRespChans = do
-    leaderElection node0 eventChans clientRespChans
-    leaderElection node1 eventChans clientRespChans
-    leaderElection node2 eventChans clientRespChans
-    leaderElection node1 eventChans clientRespChans
     runRaftTestClientM client0 client0RespChan eventChans $ do
+      leaderElection' node0 eventChans
+      leaderElection' node1 eventChans
+      leaderElection' node2 eventChans
+      leaderElection' node1 eventChans
       Left ldr <- syncClientRead node0
       pure ldr
   where

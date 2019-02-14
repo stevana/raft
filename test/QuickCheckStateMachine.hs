@@ -286,13 +286,13 @@ semantics h (Incr chs) = do
 semantics h (BreakConnection (port, ph)) = do
   hPutStrLn h ("Break connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
-  callCommand ("fiu-ctrl -c 'enable name=posix/io/*' " ++ show pid)
+  callCommand ("fiu-ctrl -c 'enable name=posix/io/net/*' " ++ show pid)
   threadDelay 2000000
   return BrokeConnection
 semantics h (FixConnection (port, ph)) = do
   hPutStrLn h ("Fix connection, port: " ++ show port)
   Just pid <- getPid (opaque ph)
-  callCommand ("fiu-ctrl -c 'disable name=posix/io/*' " ++ show pid)
+  callCommand ("fiu-ctrl -c 'disable name=posix/io/net/*' " ++ show pid)
   threadDelay 2000000
   return FixedConnection
 

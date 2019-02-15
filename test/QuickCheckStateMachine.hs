@@ -55,7 +55,7 @@ import           Debug.Trace                   (trace)
 type Port = Int
 
 data Persistence = Fresh | Existing
-  deriving (Show)
+  deriving (Eq, Show)
 
 data ClientHandleRefs (r :: * -> *) = ClientHandleRefs
   { client_hin :: Reference (Opaque Handle) r
@@ -209,15 +209,25 @@ semantics h (SpawnNode port1 p) = do
         3001 -> (3000, 3002)
         3002 -> (3000, 3001)
         _    -> error "semantics: invalid port1"
-  let persistence Fresh    = "fresh"
-      persistence Existing = "existing"
+
+  let reset = if p == Fresh then ["--reset"] else []
+  let args =
+        [ "-x"
+        , "stack"
+        , "exec"
+        , "--"
+        , "raft-example"
+        , "node"
+        , "localhost:" ++ show port1
+        ] ++ reset ++
+        [ "--postgres"
+        , "postgresql://libraft_test:libraft_test@localhost/" ++ show port1
+        , "--nodes"
+        , "localhost:" ++ show port2 ++ " localhost:" ++ show port3
+        ]
+
   (_, _, _, ph) <- createProcess
-    (proc "fiu-run" [ "-x", "stack", "exec", "raft-example", "node"
-                    , persistence p, "postgres", show port1
-                    , "localhost:" ++ show port1
-                    , "localhost:" ++ show port2
-                    , "localhost:" ++ show port3
-                    ])
+    (proc "fiu-run" args)
       { std_out = UseHandle h'
       , std_err = UseHandle h'
       }
@@ -268,7 +278,7 @@ semantics h (Set chs i) = do
     Nothing    -> return Timeout
     Just _resp -> return Ack
 semantics h (Read chs) = do
-  (ue, mresp) <- command h chs "read"
+  (ue, mresp) <- command h chs "readState"
   case mresp of
     Nothing   -> return Timeout
     Just resp -> do

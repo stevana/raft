@@ -84,7 +84,7 @@ prevTerm t = pred t
 
 -- | Representation of monotonic indices
 newtype Index = Index Natural
-  deriving stock (Show, Generic)
+  deriving stock (Show, Read, Generic)
   deriving newtype (Eq, Ord, Enum, Num, Integral, Real, Serialize)
 
 instance ToField Index where

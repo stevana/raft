@@ -4,13 +4,13 @@ jobs:
     machine: true
     steps:
       - checkout
-      
+
       - run:
           name: Install System Dependencies
           command: |
             sudo apt-get update
             sudo apt-get install -y wget happy fiu-utils libpq-dev postgresql
-      
+
       - run:
           name: Install Haskell stack
           command: |
@@ -20,7 +20,7 @@ jobs:
             sudo chmod +x /tmp/stack-download/stack-1.7.1-linux-x86_64/stack
             sudo mv /tmp/stack-download/stack-1.7.1-linux-x86_64/stack /usr/bin/stack
             stack --version --no-terminal
-      
+
       - run:
           name: Install dockerize tool
           command: |
@@ -30,40 +30,42 @@ jobs:
           environment:
             DOCKERIZE_VERSION: v0.6.1
       - run:
-          name: Wait for PostgreSQL 
+          name: Wait for PostgreSQL
           command: dockerize -wait tcp://localhost:5432 -timeout 1m
       - run:
           name: Setup PostgreSQL DB
           command: sudo -su postgres psql -U postgres -c "CREATE USER libraft_test WITH CREATEDB PASSWORD 'libraft_test';"
 
       - restore_cache:
-          key: libraft-v1-{{ checksum "package.yaml" }}
+          keys:
+            - libraft-v1-{{ checksum "package.yaml" }}
+            - libraft-v1
           paths:
             - .stack-work
             - ~/.stack
-      
+
       - run:
           name: Build libraft dependencies
-          command: stack test --no-terminal --no-run-tests -j2 --system-ghc 
-      
+          command: stack test --no-terminal --no-run-tests -j2 --system-ghc
+
       - save_cache:
           key: libraft-v1-{{ checksum "package.yaml" }}
           paths:
              - .stack-work
              - ~/.stack
-     
-      - run: 
+
+      - run:
           name: Run tests for libraft
           command: |
             echo 0 > raft_tests_error_code
             (stack test --no-terminal --system-ghc) || echo $? > raft_tests_error_code
-            mkdir /tmp/raft-test-logs 
+            mkdir /tmp/raft-test-logs
             cp -r /tmp/raft-log* /tmp/raft-test-logs
             exit $(cat raft_tests_error_code)
 
       - store_artifacts:
           path: /tmp/raft-test-logs
-      
+
 workflows:
   version: 2
   build_and_test:

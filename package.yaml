@@ -39,9 +39,10 @@ dependencies:
 - word8
 - network
 - directory
-- cryptohash-sha256 
+- filepath
+- cryptohash-sha256
 - base16-bytestring
-- lifted-base 
+- lifted-base
 - monad-control
 - transformers-base
 - atomic-write
@@ -55,7 +56,7 @@ default-extensions:
   NoImplicitPrelude
   OverloadedStrings
   LambdaCase
-  
+
 library:
   source-dirs: src
   ghc-options:
@@ -73,6 +74,8 @@ executables:
     dependencies:
     - libraft
     - stm
+    - postgresql-simple-url
+    - optparse-applicative
 
 tests:
   raft-test:

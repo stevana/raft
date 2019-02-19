@@ -144,10 +144,7 @@ handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) 
     handleClientWriteReq newSerial v =
       case Map.lookup cid lsClientReqCache of
         -- This is important case #1
-        Nothing -> do
-          let lsClientReqCache' = Map.insert cid (newSerial, Nothing) lsClientReqCache
-          handleNewEntry
-          pure ls { lsClientReqCache = lsClientReqCache' }
+        Nothing -> handleNewEntry newSerial v
         Just (currSerial, mResp)
           | newSerial < currSerial -> do
               let debugMsg s1 s2 = "Ignoring serial number " <> s1 <> ", current serial is " <> s2
@@ -159,16 +156,15 @@ handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) 
                 Just idx -> respondClientWrite cid idx newSerial
               pure ls
           -- This is important case #2, where newSerial > currSerial
-          | otherwise -> do
-              let lsClientReqCache' = Map.insert cid (newSerial, Nothing) lsClientReqCache
-              handleNewEntry
-              pure ls { lsClientReqCache = lsClientReqCache' }
+          | otherwise -> handleNewEntry newSerial v
       where
-        handleNewEntry = do
-          newLogEntry <- mkNewLogEntry v newSerial
+        handleNewEntry serial cmd = do
+          let lsClientReqCache' = Map.insert cid (serial, Nothing) lsClientReqCache
+          newLogEntry <- mkNewLogEntry cmd serial
           appendLogEntries (Empty Seq.|> newLogEntry)
           aeData <- mkAppendEntriesData ls (FromClientWriteReq newLogEntry)
           broadcast (SendAppendEntriesRPC aeData)
+          pure ls { lsClientReqCache = lsClientReqCache' }
 
 --------------------------------------------------------------------------------
 

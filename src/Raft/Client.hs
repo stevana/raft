@@ -34,6 +34,7 @@ module Raft.Client
 
 , ClientRespSpec(..)
 , ClientReadRespSpec(..)
+, ClientWriteRespSpec(..)
 
 , ClientReadResp(..)
 , ClientWriteResp(..)
@@ -86,6 +87,7 @@ import System.Console.Haskeline.MonadException (MonadException(..), RunIO(..))
 import System.Timeout.Lifted (timeout)
 
 import Raft.Log (Entry, Entries, ReadEntriesSpec)
+import Raft.StateMachine
 import Raft.Types
 
 --------------------------------------------------------------------------------
@@ -135,16 +137,27 @@ data ClientReadReq
 --------------------------------------------------------------------------------
 
 -- | Specification for the data inside a ClientResponse
-data ClientRespSpec sm
+data ClientRespSpec sm v
   = ClientReadRespSpec (ClientReadRespSpec sm)
-  | ClientWriteRespSpec Index SerialNum
+  | ClientWriteRespSpec (ClientWriteRespSpec sm v)
   | ClientRedirRespSpec CurrentLeader
-  deriving (Show, Generic, S.Serialize)
+  deriving (Generic)
+
+deriving instance (Show sm, Show v, Show (RaftStateMachinePureError sm v)) => Show (ClientRespSpec sm v)
+deriving instance (S.Serialize sm, S.Serialize v, S.Serialize (RaftStateMachinePureError sm v)) => S.Serialize (ClientRespSpec sm v)
 
 data ClientReadRespSpec sm
   = ClientReadRespSpecEntries ReadEntriesSpec
   | ClientReadRespSpecStateMachine sm
   deriving (Show, Generic, S.Serialize)
+
+data ClientWriteRespSpec sm v
+  = ClientWriteRespSpecSuccess Index SerialNum
+  | ClientWriteRespSpecFail SerialNum (RaftStateMachinePureError sm v)
+  deriving (Generic)
+
+deriving instance (Show sm, Show v, Show (RaftStateMachinePureError sm v)) => Show (ClientWriteRespSpec sm v)
+deriving instance (S.Serialize sm, S.Serialize v, S.Serialize (RaftStateMachinePureError sm v)) => S.Serialize (ClientWriteRespSpec sm v)
 
 --------------------------------------------------------------------------------
 
@@ -152,37 +165,36 @@ data ClientReadRespSpec sm
 data ClientResponse sm v
   = ClientReadResponse (ClientReadResp sm v)
     -- ^ Respond with the latest state of the state machine.
-  | ClientWriteResponse ClientWriteResp
+  | ClientWriteResponse (ClientWriteResp sm v)
     -- ^ Respond with the index of the entry appended to the log
   | ClientRedirectResponse ClientRedirResp
     -- ^ Respond with the node id of the current leader
-  deriving (Show, Generic)
+  deriving (Generic)
 
-instance (S.Serialize sm, S.Serialize v) => S.Serialize (ClientResponse sm v)
+deriving instance (Show sm, Show v, Show (ClientWriteResp sm v)) => Show (ClientResponse sm v)
+deriving instance (S.Serialize sm, S.Serialize v, S.Serialize (ClientWriteResp sm v)) => S.Serialize (ClientResponse sm v)
 
 -- | Representation of a read response to a client
 data ClientReadResp sm v
   = ClientReadRespStateMachine sm
   | ClientReadRespEntry (Entry v)
   | ClientReadRespEntries (Entries v)
-  deriving (Show, Generic)
-
-instance (S.Serialize sm, S.Serialize v) => S.Serialize (ClientReadResp sm v)
+  deriving (Show, Generic, S.Serialize)
 
 -- | Representation of a write response to a client
-data ClientWriteResp
-  = ClientWriteResp Index SerialNum
+data ClientWriteResp sm v
+  = ClientWriteRespSuccess Index SerialNum
   -- ^ Index of the entry appended to the log due to the previous client request
-  deriving (Show, Generic)
+  | ClientWriteRespFail SerialNum (RaftStateMachinePureError sm v)
+  deriving (Generic)
 
-instance S.Serialize ClientWriteResp
+deriving instance (Show sm, Show v, Show (RaftStateMachinePureError sm v)) => Show (ClientWriteResp sm v)
+deriving instance (S.Serialize sm, S.Serialize v, S.Serialize (RaftStateMachinePureError sm v)) => S.Serialize (ClientWriteResp sm v)
 
 -- | Representation of a redirect response to a client
 data ClientRedirResp
   = ClientRedirResp CurrentLeader
-  deriving (Show, Generic)
-
-instance S.Serialize ClientRedirResp
+  deriving (Show, Generic, S.Serialize)
 
 --------------------------------------------------------------------------------
 -- Client Interface
@@ -271,10 +283,10 @@ data RaftClientError s v m where
   RaftClientRecvError  :: RaftClientRecvError m s -> RaftClientError s v m
   RaftClientTimeout    :: Text -> RaftClientError s v m
   RaftClientUnexpectedReadResp  :: ClientReadResp s v -> RaftClientError s v m
-  RaftClientUnexpectedWriteResp :: ClientWriteResp -> RaftClientError s v m
+  RaftClientUnexpectedWriteResp :: ClientWriteResp s v -> RaftClientError s v m
   RaftClientUnexpectedRedirect  :: ClientRedirResp -> RaftClientError s v m
 
-deriving instance (Show s, Show v, Show (RaftClientSendError m v), Show (RaftClientRecvError m s)) => Show (RaftClientError s v m)
+deriving instance (Show s, Show v, Show (RaftClientSendError m v), Show (RaftClientRecvError m s), Show (RaftStateMachinePureError s v)) => Show (RaftClientError s v m)
 
 -- | Send a read request to the curent leader and wait for a response
 clientRead
@@ -312,7 +324,7 @@ clientReadTimeout t = clientTimeout "clientRead" t . clientRead
 clientWrite
   :: (RaftClientSend m v, RaftClientRecv m s v)
   => v
-  -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
+  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientWriteResp s v))
 clientWrite cmd = do
   eSend <- clientSendWrite cmd
   case eSend of
@@ -325,7 +337,7 @@ clientWriteTo
   :: (RaftClientSend m v, RaftClientRecv m s v)
   => NodeId
   -> v
-  -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
+  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientWriteResp s v))
 clientWriteTo nid cmd = do
   eSend <- clientSendWriteTo nid cmd
   case eSend of
@@ -336,7 +348,7 @@ clientWriteTimeout
   :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s v)
   => Int
   -> v
-  -> RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
+  -> RaftClientT s v m (Either (RaftClientError s v m) (ClientWriteResp s v))
 clientWriteTimeout t cmd = clientTimeout "clientWrite" t (clientWrite cmd)
 
 clientTimeout
@@ -455,7 +467,7 @@ clientSendRandom creq = do
 -- Warning: This function discards unexpected read and redirect responses
 clientRecvWrite
   :: (RaftClientSend m v, RaftClientRecv m s v)
-  => RaftClientT s v m (Either (RaftClientError s v m) ClientWriteResp)
+  => RaftClientT s v m (Either (RaftClientError s v m) (ClientWriteResp s v))
 clientRecvWrite = do
   eRes <- clientRecv
   case eRes of
@@ -492,29 +504,41 @@ clientRecv = do
     Left err -> pure (Left err)
     Right cresp ->
       case cresp of
-        ClientWriteResponse (ClientWriteResp _ (SerialNum n)) -> do
-          SerialNum m <- gets raftClientSerialNum
-          if m == n
-          then do
-            modify $ \s -> s
-              { raftClientSerialNum = SerialNum (succ m) }
-            pure (Right cresp)
-          else
-            -- Here, we ignore the response if we are receiving a response
-            -- regarding a previously committed write request. This regularly
-            -- happens when a write request is submitted, committed, and
-            -- responded to, but the leader subsequently dies before letting all
-            -- other nodes know that the write request has been committed.
-            if n < m
-            then clientRecv
-            else do
-              let errMsg = "Received invalid serial number response: Expected " <> show m <> " but got " <> show n
-              panic $ errMsg
+        ClientWriteResponse cwr ->
+          case cwr of
+            ClientWriteRespSuccess _ serial@(SerialNum n) -> do
+              SerialNum m <- gets raftClientSerialNum
+              if m == n
+              then do
+                modify $ \s -> s
+                  { raftClientSerialNum = SerialNum (succ m) }
+                pure (Right cresp)
+              else handleLowerSerialNum serial
+            ClientWriteRespFail serial@(SerialNum n) err -> do
+              SerialNum m <- gets raftClientSerialNum
+              if m == n
+              then pure (Right cresp)
+              else handleLowerSerialNum serial
+
         ClientRedirectResponse (ClientRedirResp currLdr) -> do
           modify $ \s -> s
             { raftClientCurrentLeader = currLdr }
           pure (Right cresp)
         _ -> pure (Right cresp)
+  where
+    -- Here, we ignore the response if we are receiving a response
+    -- regarding a previously committed write request. This regularly
+    -- happens when a write request is submitted, committed, and
+    -- responded to, but the leader subsequently dies before letting all
+    -- other nodes know that the write request has been committed.
+    handleLowerSerialNum (SerialNum n) = do
+      SerialNum m <- gets raftClientSerialNum
+      if n < m
+      then clientRecv
+      else do
+        let errMsg = "Received invalid serial number response: Expected " <> show m <> " but got " <> show n
+        panic $ errMsg
+
 
 --------------------------------------------------------------------------------
 

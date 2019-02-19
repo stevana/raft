@@ -221,41 +221,69 @@ handleEventLoop initRaftStateMachine = do
       Left err -> throwM err
       Right pstate -> handleEventLoop' initRaftStateMachine pstate
   where
+
+    -- Some events must be validated before being processed by the system:
+    --
+    --   - If the node is a leader, and the event is a client write request, the
+    --   command issued by the client must satisfy a predicate given by the
+    --   programmer in the 'RaftStateMachine` and 'RaftStateMachinePure' typeclasses
+    withValidatedEvent :: sm -> (Event v -> RaftT v m ()) -> RaftT v m ()
+    withValidatedEvent stateMachine f = do
+      event <- lift . readRaftChan =<< asks eventChan
+      RaftNodeState raftNodeState <- get
+      case raftNodeState of
+        NodeLeaderState _ -> do
+          case event of
+            MessageEvent (ClientRequestEvent (ClientRequest cid creq)) ->
+              case creq of
+                ClientWriteReq serial cmd -> do
+                  eRes <- lift (applyLogCmd MonadicValidation stateMachine cmd)
+                  case eRes of
+                    Left err -> do
+                      let clientWriteRespSpec err = ClientWriteRespSpec (ClientWriteRespSpecFail serial err)
+                          clientFailRespAction err = RespondToClient cid (clientWriteRespSpec err)
+                      handleAction (clientFailRespAction err)
+                    -- Don't actually do anything if validating the command succeeds
+                    Right _ -> f event
+                _ -> f event
+            _ -> f event
+        _ -> f event
+
     handleEventLoop' :: sm -> PersistentState -> RaftT v m ()
     handleEventLoop' stateMachine persistentState = do
-      event <- lift . readRaftChan =<< asks eventChan
-      loadLogEntryTermAtAePrevLogIndex event
-      raftNodeState <- get
-      logDebug $ "[Event]: " <> show event
-      logDebug $ "[NodeState]: " <> show raftNodeState
-      logDebug $ "[State Machine]: " <> show stateMachine
-      logDebug $ "[Persistent State]: " <> show persistentState
+      withValidatedEvent stateMachine $ \event -> do
+        loadLogEntryTermAtAePrevLogIndex event
+        raftNodeState <- get
+        logDebug $ "[Event]: " <> show event
+        logDebug $ "[NodeState]: " <> show raftNodeState
+        logDebug $ "[State Machine]: " <> show stateMachine
+        logDebug $ "[Persistent State]: " <> show persistentState
 
-      -- Perform core state machine transition, handling the current event
-      nodeConfig <- asks raftNodeConfig
-      let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
-          (resRaftNodeState, resPersistentState, actions, logMsgs) =
-            Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event
+        -- Perform core state machine transition, handling the current event
+        nodeConfig <- asks raftNodeConfig
+        let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
+            (resRaftNodeState, resPersistentState, actions, logMsgs) =
+              Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event
 
-      -- Write persistent state to disk.
-      --
-      -- Checking equality of Term + NodeId (what PersistentState is comprised of)
-      -- is very cheap, but writing to disk is not necessarily cheap.
-      when (resPersistentState /= persistentState) $ do
-        eRes <- lift $ writePersistentState resPersistentState
-        case eRes of
-          Left err -> throwM err
-          Right _ -> pure ()
+        -- Write persistent state to disk.
+        --
+        -- Checking equality of Term + NodeId (what PersistentState is comprised of)
+        -- is very cheap, but writing to disk is not necessarily cheap.
+        when (resPersistentState /= persistentState) $ do
+          eRes <- lift $ writePersistentState resPersistentState
+          case eRes of
+            Left err -> throwM err
+            Right _ -> pure ()
 
-      -- Update raft node state with the resulting node state
-      put resRaftNodeState
-      -- Handle logs produced by core state machine
-      handleLogs logMsgs
-      -- Handle actions produced by core state machine
-      handleActions actions
-      -- Apply new log entries to the state machine
-      resRaftStateMachine <- applyLogEntries stateMachine
-      handleEventLoop' resRaftStateMachine resPersistentState
+        -- Update raft node state with the resulting node state
+        put resRaftNodeState
+        -- Handle logs produced by core state machine
+        handleLogs logMsgs
+        -- Handle actions produced by core state machine
+        handleActions actions
+        -- Apply new log entries to the state machine
+        resRaftStateMachine <- applyLogEntries stateMachine
+        handleEventLoop' resRaftStateMachine resPersistentState
 
     -- In the case that a node is a follower receiving an AppendEntriesRPC
     -- Event, read the log at the aePrevLogIndex
@@ -328,7 +356,8 @@ handleAction action = do
     RespondToClient cid cr -> do
       clientResp <- mkClientResp cr
       -- TODO log failure if sendClient fails
-      void $ raftFork (CustomThreadRole "Respond to Client") $ lift $ sendClient cid clientResp
+      void $ raftFork (CustomThreadRole "Respond to Client") $ do
+        lift (sendClient cid clientResp)
     ResetTimeoutTimer tout -> do
       case tout of
         ElectionTimeout -> lift . resetElectionTimer =<< ask
@@ -359,9 +388,9 @@ handleAction action = do
   where
     respondClientWrite :: (ClientId, (SerialNum, Index)) -> RaftT v m ()
     respondClientWrite (cid, (sn,idx)) =
-      handleAction $ RespondToClient cid (ClientWriteRespSpec idx sn :: ClientRespSpec sm)
+      handleAction $ RespondToClient cid (ClientWriteRespSpec @sm (ClientWriteRespSpecSuccess idx sn))
 
-    mkClientResp :: ClientRespSpec sm -> RaftT v m (ClientResponse sm v)
+    mkClientResp :: ClientRespSpec sm v -> RaftT v m (ClientResponse sm v)
     mkClientResp crs =
       case crs of
         ClientReadRespSpec crrs ->
@@ -377,8 +406,13 @@ handleAction action = do
                       ManyEntries es -> pure (ClientReadRespEntries es)
               ClientReadRespSpecStateMachine sm ->
                 pure (ClientReadRespStateMachine sm)
-        ClientWriteRespSpec idx sn ->
-          pure (ClientWriteResponse (ClientWriteResp idx sn))
+        ClientWriteRespSpec cwrs ->
+          ClientWriteResponse <$>
+            case cwrs of
+              ClientWriteRespSpecSuccess idx sn ->
+                pure (ClientWriteRespSuccess idx sn)
+              ClientWriteRespSpecFail sn err ->
+                pure (ClientWriteRespFail sn err)
         ClientRedirRespSpec cl ->
           pure (ClientRedirectResponse (ClientRedirResp cl))
 
@@ -467,7 +501,7 @@ applyLogEntries stateMachine = do
             -- The command should be verified by the leader, thus all node
             -- attempting to apply the committed log entry should not fail when
             -- doing so; failure here means something has gone very wrong.
-            eRes <- lift (applyLogEntry stateMachine logEntry)
+            eRes <- lift (applyLogEntry NoMonadicValidation stateMachine logEntry)
             case eRes of
               Left err -> logAndPanic $ "Failed to apply committed log entry: " <> show err
               Right nsm -> applyLogEntries nsm

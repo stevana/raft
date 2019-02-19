@@ -38,7 +38,9 @@ data StoreCmd
 type Store = Map Var Natural
 
 instance RaftStateMachinePure Store StoreCmd where
-  data RaftStateMachinePureError Store StoreCmd = StoreError Text deriving (Show)
+  data RaftStateMachinePureError Store StoreCmd = StoreError [Char]
+    deriving (Show, Generic, Serialize)
+
   type RaftStateMachinePureCtx Store StoreCmd = ()
 
   rsmTransition _ store cmd =

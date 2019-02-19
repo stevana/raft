@@ -8,7 +8,9 @@ module Raft.StateMachine (
   RaftStateMachinePureError(..),
   RaftStateMachine(..),
 
-  applyLogEntry
+  EntryValidation(..),
+  applyLogEntry,
+  applyLogCmd
 ) where
 
 import Protolude
@@ -36,20 +38,48 @@ class RaftStateMachinePure sm v | sm -> v where
 
 class (Monad m, RaftStateMachinePure sm v) => RaftStateMachine m sm v where
   validateCmd :: v -> m (Either (RaftStateMachinePureError sm v) ())
+  -- ^ Expensive validation using global state not cacheable in
+  -- 'RaftStateMachinePureCtx'
   askRaftStateMachinePureCtx :: m (RaftStateMachinePureCtx sm v)
+  -- ^ Query the 'RaftStateMachinePureCtx' value from the monadic context
 
+data EntryValidation
+  = NoMonadicValidation
+  | MonadicValidation
+
+-- | Apply a log entry to the supplied state machine, allowing the user to
+-- specify whether or not to monadically validate the command in addition to
+-- the pure validation logic.
+--
+-- This function first unwraps the log entry to see if it is a no-op or contains
+-- an actual state machine command to apply.
 applyLogEntry
   :: RaftStateMachine m sm v
-  => sm
+  => EntryValidation
+  -> sm
   -> Entry v
   -> m (Either (RaftStateMachinePureError sm v) sm)
-applyLogEntry sm e  =
-  case entryValue e of
+applyLogEntry validation sm entry =
+  case entryValue entry of
     NoValue -> pure (Right sm)
-    EntryValue v -> do
-      res <- validateCmd v
-      case res of
-        Left err -> pure (Left err)
-        Right () -> do
-          ctx <- askRaftStateMachinePureCtx
-          pure (rsmTransition ctx sm v)
+    EntryValue cmd -> applyLogCmd validation sm cmd
+
+-- | Apply a state machine command to the supplied state machine, allowing the
+-- user to specify whether or not to monadically validate the command in
+-- addition to the pure validation logic.
+applyLogCmd
+  :: RaftStateMachine m sm cmd
+  => EntryValidation
+  -> sm
+  -> cmd
+  -> m (Either (RaftStateMachinePureError sm cmd) sm)
+applyLogCmd validation sm cmd = do
+  monadicValidationRes <-
+    case validation of
+      NoMonadicValidation -> pure (Right ())
+      MonadicValidation -> validateCmd cmd
+  case monadicValidationRes of
+    Left err -> pure (Left err)
+    Right () -> do
+      ctx <- askRaftStateMachinePureCtx
+      pure (rsmTransition ctx sm cmd)

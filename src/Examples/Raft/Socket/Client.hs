@@ -26,6 +26,7 @@ import System.Random
 
 import Raft.Client
 import Raft.Event
+import Raft.StateMachine
 import Raft.Types
 import Examples.Raft.Socket.Common
 
@@ -73,7 +74,7 @@ instance MonadException m => MonadException (RaftClientRespChanT s v m) where
         let run' = RunIO (fmap (RaftClientRespChanT . ReaderT . const) . run . flip runReaderT r . unRaftClientRespChanT)
          in fmap (flip runReaderT r . unRaftClientRespChanT) $ f run'
 
-instance (S.Serialize s, S.Serialize v, MonadIO m) => RaftClientSend (RaftClientRespChanT s v m) v where
+instance (S.Serialize s, S.Serialize v, S.Serialize (RaftStateMachinePureError s v), MonadIO m) => RaftClientSend (RaftClientRespChanT s v m) v where
   type RaftClientSendError (RaftClientRespChanT s v m) v = Text
   raftClientSend nid creq = do
     respChan <- asks clientRespChan
@@ -125,13 +126,21 @@ runRaftSocketClientM cid nids respChan rscm = do
 
 -- | Send a client read request using the example socket interface of RaftSocketClientM
 socketClientRead
-  :: (S.Serialize s, S.Serialize v, Show s, Show v, Show (RaftClientError s v (RaftSocketClientM s v)))
+  :: ( S.Serialize s, S.Serialize v, S.Serialize (RaftStateMachinePureError s v)
+     , Show s, Show v
+     , Show (RaftClientError s v (RaftSocketClientM s v))
+     , Show (RaftStateMachinePureError s v)
+     )
   => ClientReadReq
   -> RaftSocketClientM s v (Either Text (ClientReadResp s v))
 socketClientRead rr = first show <$> retryOnRedirect (clientReadTimeout 1000000 rr)
 
 socketClientWrite
-  :: (S.Serialize s, S.Serialize v, Show s, Show v, Show (RaftClientError s v (RaftSocketClientM s v)))
+  :: ( S.Serialize s, S.Serialize v, S.Serialize (RaftStateMachinePureError s v)
+     , Show s, Show v
+     , Show (RaftClientError s v (RaftSocketClientM s v))
+     , Show (RaftStateMachinePureError s v)
+     )
   => v
-  -> RaftSocketClientM s v (Either Text ClientWriteResp)
+  -> RaftSocketClientM s v (Either Text (ClientWriteResp s v))
 socketClientWrite v = first show <$> retryOnRedirect (clientWriteTimeout 1000000 v)

@@ -481,7 +481,7 @@ syncClientWrite
 syncClientWrite nid cmd = do
   eRes <- clientWriteTo nid cmd
   case eRes of
-    Right (ClientWriteResp idx sn) -> do
+    Right (ClientWriteRespSuccess idx sn) -> do
       Just nodeEventChan <- lift (asks (Map.lookup nid . testClientEnvNodeEventChans))
       pure $ Right idx
     Left (RaftClientUnexpectedRedirect (ClientRedirResp ldr)) -> pure $ Left ldr

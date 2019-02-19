@@ -1,5 +1,18 @@
 # Changelog for raft
 
+## 0.4.2.0 (Pending)
+
+- Feature: Client write requests are now validated by the leader before being
+  written to its log using the functions from the `RaftStateMachine` and
+  `RaftStateMachinePure` typeclasses; Followers do not re-validate the log
+  entry when they receive the entry from the leader.
+- API change: The `RaftStateMachinePureError sm v` type family from the
+  `RaftStateMachinePure` typeclass must now have both a `Show` and a
+  `Serialize` instance.
+- API change: Client write requests now have the potential of returning a
+  `ClientWriteRespFail` signifying a failure during the validation of the
+  request state machine update.
+
 ## 0.4.1.0
 
 - Improvement: Users can now supply an existing logging function to log internal

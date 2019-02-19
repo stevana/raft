@@ -123,10 +123,9 @@ respondClientRead clientId readReq = do
         pure (ClientReadRespSpecStateMachine sm)
   tellAction . RespondToClient clientId . ClientReadRespSpec $ readReqData
 
-
 respondClientWrite :: ClientId -> Index -> SerialNum -> TransitionM sm v ()
 respondClientWrite cid entryIdx sn =
-  tellAction (RespondToClient cid (ClientWriteRespSpec entryIdx sn))
+  tellAction (RespondToClient cid (ClientWriteRespSpec (ClientWriteRespSpecSuccess entryIdx sn)))
 
 respondClientRedir :: ClientId -> CurrentLeader -> TransitionM sm v ()
 respondClientRedir cid cl =

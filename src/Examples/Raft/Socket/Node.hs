@@ -110,7 +110,11 @@ runRaftSocketT :: MonadIO m => NodeSocketEnv sm v -> RaftSocketT sm v m a -> m a
 runRaftSocketT nodeSocketEnv = flip runReaderT nodeSocketEnv . unRaftSocketT
 
 acceptConnections
-  :: forall sm v m. (S.Serialize sm, S.Serialize v, MonadIO m)
+  :: forall sm v m.
+     ( S.Serialize sm, S.Serialize v, S.Serialize (RaftStateMachinePureError sm v)
+     , Show (RaftStateMachinePureError sm v)
+     , MonadIO m
+     )
   => HostName
   -> ServiceName
   -> RaftSocketT sm v m ()

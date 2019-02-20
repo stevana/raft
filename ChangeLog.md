@@ -6,6 +6,10 @@
   written to its log using the functions from the `RaftStateMachine` and
   `RaftStateMachinePure` typeclasses; Followers do not re-validate the log
   entry when they receive the entry from the leader.
+- API change: The `clientSendX` family of functions now take a `ClientReq`
+  value as an argument instead of a fully formed `ClientRequest` value, such
+  that the known `ClientId` is used to construct the `ClientRequest` value
+  instead of users having to supply it themselves.
 - API change: The `RaftStateMachinePureError sm v` type family from the
   `RaftStateMachinePure` typeclass must now have both a `Show` and a
   `Serialize` instance.

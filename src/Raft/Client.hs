@@ -61,6 +61,9 @@ module Raft.Client
 , clientWriteTo
 , clientWriteTimeout
 
+, clientSend
+, clientRecv
+
 , retryOnRedirect
 
 , clientAddNode

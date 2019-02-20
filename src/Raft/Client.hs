@@ -61,6 +61,8 @@ module Raft.Client
 , clientWriteTo
 , clientWriteTimeout
 
+, clientSendRead
+, clientSendWrite
 , clientSend
 , clientRecv
 

@@ -76,7 +76,12 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       let initReadReqs = lsReadRequest leaderState
           (mCreqData, newReadReqs) =
             case Map.lookup n initReadReqs of
+              -- In this case, the client who issued the read request has been
+              -- responded to already (i.e. this is an extraneous confirmation)
               Nothing -> (Nothing, initReadReqs)
+              -- Otherwise, the client has not been responded to, because the
+              -- leader has not accumulated enough confirmations of its state
+              -- as network leader.
               Just (creqData, m)
                 | isMajority (succ m) networkSize -> (Just creqData, Map.delete n initReadReqs)
                 | otherwise -> (Nothing, Map.adjust (second succ) n initReadReqs)
@@ -119,27 +124,19 @@ handleTimeout (NodeLeaderState ls) timeout =
 handleClientRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader sm v
 handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) = do
     case cr of
-      ClientReadReq crr -> do
-        heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
-        broadcast (SendAppendEntriesRPC heartbeat)
-        let clientReqData = ClientReadReqData cid crr
-            newLeaderState =
-              ls { lsReadRequest = Map.insert lsReadReqsHandled (clientReqData, 1) lsReadRequest
-                 }
-        pure (leaderResultState HandleClientReq newLeaderState)
+      ClientReadReq crr ->
+        leaderResultState HandleClientReq <$> handleClientReadReq crr
       ClientWriteReq newSerial v ->
         leaderResultState HandleClientReq <$> handleClientWriteReq newSerial v
   where
-    mkNewLogEntry v sn = do
-      currentTerm <- currentTerm <$> get
-      let lastLogEntryIdx = lastLogEntryIndex lsLastLogEntry
-      pure $ Entry
-        { entryIndex = succ lastLogEntryIdx
-        , entryTerm = currentTerm
-        , entryValue = EntryValue v
-        , entryIssuer = ClientIssuer cid sn
-        , entryPrevHash = hashLastLogEntry lsLastLogEntry
-        }
+    handleClientReadReq crr = do
+      heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
+      broadcast (SendAppendEntriesRPC heartbeat)
+      let clientReqData = ClientReadReqData cid crr
+      pure ls {
+        lsReadRequest =
+          Map.insert lsReadReqsHandled (clientReqData, 1) lsReadRequest
+      }
 
     handleClientWriteReq newSerial v =
       case Map.lookup cid lsClientReqCache of
@@ -166,6 +163,18 @@ handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) 
           broadcast (SendAppendEntriesRPC aeData)
           pure ls { lsClientReqCache = lsClientReqCache' }
 
+    mkNewLogEntry v sn = do
+      currentTerm <- currentTerm <$> get
+      let lastLogEntryIdx = lastLogEntryIndex lsLastLogEntry
+      pure $ Entry
+        { entryIndex = succ lastLogEntryIdx
+        , entryTerm = currentTerm
+        , entryValue = EntryValue v
+        , entryIssuer = ClientIssuer cid sn
+        , entryPrevHash = hashLastLogEntry lsLastLogEntry
+        }
+
+
 --------------------------------------------------------------------------------
 
 -- | If there exists an N such that N > commitIndex, a majority of
@@ -185,15 +194,21 @@ incrCommitIndex leaderState@LeaderState{..} = do
   where
     n = lsCommitIndex + 1
 
-    -- Note, the majority in this case includes the leader itself, thus when
-    -- calculating the number of nodes that need a match index > N, we only need
-    -- to divide the size of the map by 2 instead of also adding one.
+    -- Note: The majority should include the leader, which is not accounted for
+    -- in the lsMatchIndex map, thus, we should add one to both the number of
+    -- followers that have a match index >= n, as well as the total size of
+    -- 'lsMatchIndex'. E.G. Imagine a network of 2 followers and 1 leader; in
+    -- the case where one of the followers has a match index >= n, technically a
+    -- majority has replicated the instance if you include the leader. However,
+    -- without adding one to each parameter of 'isMajority' (not accounting for
+    -- the leader) would result in False, because 1 out of 2 followers is not a
+    -- majority.
     majorityGreaterThanN =
       isMajority (Map.size (Map.filter (>= n) lsMatchIndex) + 1)
-                 (Map.size lsMatchIndex)
+                 (Map.size lsMatchIndex + 1)
 
 isMajority :: Int -> Int -> Bool
-isMajority n m = n >= m `div` 2 + 1
+isMajority n m = n > m `div` 2
 
 -- | Construct an AppendEntriesRPC given log entries and a leader state.
 mkAppendEntriesData

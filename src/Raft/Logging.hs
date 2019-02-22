@@ -12,7 +12,7 @@ module Raft.Logging where
 import Protolude
 
 import Control.Monad.Trans.Class (MonadTrans)
-import Control.Monad.State (modify')
+import Control.Monad.State.Strict (modify')
 
 import Data.Time
 import Data.Time.Clock.System
@@ -45,7 +45,7 @@ data LogMsg = LogMsg
   { mTime :: Maybe SystemTime
   , severity :: Severity
   , logMsgData :: LogMsgData
-  }
+  } deriving (Show)
 
 data LogMsgData = LogMsgData
   { logMsgNodeId :: NodeId
@@ -89,7 +89,8 @@ logToDest LogCtx{..} logMsg = do
   let msgSeverity = severity logMsg
   case logCtxDest of
     LogWith f -> if msgSeverity >= logCtxSeverity
-                  then f msgSeverity (logMsgToText logMsg)
+                  then do
+                    f msgSeverity (logMsgToText logMsg)
                   else pure ()
     LogStdout -> if msgSeverity >= logCtxSeverity
                     then liftIO $ putText (logMsgToText logMsg)

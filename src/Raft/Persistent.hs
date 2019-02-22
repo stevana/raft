@@ -29,9 +29,9 @@ class Monad m => RaftPersist m where
 
 -- | Persistent state that all Raft nodes maintain, regardless of node state.
 data PersistentState = PersistentState
-  { currentTerm :: Term
+  { currentTerm :: !Term
     -- ^ Last term server has seen
-  , votedFor :: Maybe NodeId
+  , votedFor :: !(Maybe NodeId)
     -- ^ Candidate id that received vote in current term
   } deriving (Show, Eq, Generic, S.Serialize)
 

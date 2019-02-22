@@ -15,7 +15,7 @@ module Raft.Transition where
 import Protolude hiding (pass)
 
 import Control.Arrow ((&&&))
-import Control.Monad.RWS
+import Control.Monad.RWS.Strict
 
 import qualified Data.Set as Set
 
@@ -43,9 +43,9 @@ tellActions :: [Action sm v] -> TransitionM sm v ()
 tellActions as = tell as
 
 data TransitionEnv sm v = TransitionEnv
-  { nodeConfig :: RaftNodeConfig
-  , stateMachine :: sm
-  , nodeState :: RaftNodeState v
+  { nodeConfig :: !RaftNodeConfig
+  , stateMachine :: !sm
+  , nodeState :: !(RaftNodeState v)
   }
 
 newtype TransitionM sm v a = TransitionM
@@ -78,6 +78,13 @@ runTransitionM transEnv persistentState transitionM =
 
 askNodeId :: TransitionM sm v NodeId
 askNodeId = asks (configNodeId . nodeConfig)
+
+-- | Returns the set of all node ids excluding the node's own id
+askPeerNodeIds :: TransitionM sm v NodeIds
+askPeerNodeIds = do
+  selfNodeId <- askNodeId
+  allNodeIds <- asks (configNodeIds . nodeConfig)
+  pure (Set.delete selfNodeId allNodeIds)
 
 --------------------------------------------------------------------------------
 -- Handlers

@@ -16,6 +16,8 @@
 - API change: Client write requests now have the potential of returning a
   `ClientWriteRespFail` signifying a failure during the validation of the
   request state machine update.
+- Bug Fix: When running networks of size 2, 'incrCommitIndex' will no longer run
+  in an infinite loop when incrementing the leader's commit to the correct N. 
 
 ## 0.4.1.0
 

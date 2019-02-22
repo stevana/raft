@@ -357,12 +357,12 @@ leaderElection' nid eventChans = do
 
 incrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
 incrValue eventChans clientRespChans = do
-    leaderElection node0 eventChans clientRespChans
     runRaftTestClientM client0 client0RespChan eventChans $ do
+      leaderElection' node0 eventChans
       Right idx <- do
         syncClientWrite node0 (Set "x" 41)
-        syncClientWrite node0 (Incr"x")
-      store <- pollForReadResponse node0
+        syncClientWrite node0 (Incr "x")
+      Right store <- syncClientRead node0
       pure (store, idx)
   where
     Just client0RespChan = Map.lookup client0 clientRespChans

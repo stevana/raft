@@ -107,15 +107,13 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
           , aedEntriesSpec = FromNewLeader noopEntry
           }
       resetHeartbeatTimeout
-      cNodeIds <- asks (configNodeIds . nodeConfig)
+      followerNodeIds <- Set.toList <$> askPeerNodeIds
       let lastLogEntryIdx = entryIndex noopEntry
       pure LeaderState
        { lsCommitIndex = csCommitIndex
        , lsLastApplied = csLastApplied
-       , lsNextIndex = Map.fromList $
-           (,lastLogEntryIdx) <$> Set.toList cNodeIds
-       , lsMatchIndex = Map.fromList $
-           (,index0) <$> Set.toList cNodeIds
+       , lsNextIndex = Map.fromList $ (,lastLogEntryIdx) <$> followerNodeIds
+       , lsMatchIndex = Map.fromList $ (,index0) <$> followerNodeIds
        , lsLastLogEntry = csLastLogEntry
        , lsReadReqsHandled = 0
        , lsReadRequest = mempty

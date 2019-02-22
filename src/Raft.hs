@@ -265,6 +265,7 @@ handleEventLoop initRaftStateMachine = do
             (resRaftNodeState, resPersistentState, actions, logMsgs) =
               Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event
 
+        logDebug "Writing PersistentState to disk..."
         -- Write persistent state to disk.
         --
         -- Checking equality of Term + NodeId (what PersistentState is comprised of)

@@ -18,6 +18,8 @@
   request state machine update.
 - Bug Fix: When running networks of size 2, 'incrCommitIndex' will no longer run
   in an infinite loop when incrementing the leader's commit to the correct N. 
+- Bug Fix: When an invalid client request is submitted, the leader appropriately
+  responds with a failure response and handles the next event as expected.
 
 ## 0.4.1.0
 

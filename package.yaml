@@ -6,7 +6,7 @@ github:              "adjoint-io/raft"
 license:             BSD3
 author:              "Adjoint Inc."
 maintainer:          "info@adjoint.io"
-copyright:           "2018 Adjoint Inc."
+copyright:           "2018-2019 Adjoint Inc."
 
 extra-source-files:
 - README.md

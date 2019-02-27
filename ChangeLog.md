@@ -16,6 +16,9 @@
 - API change: Client write requests now have the potential of returning a
   `ClientWriteRespFail` signifying a failure during the validation of the
   request state machine update.
+- API change: The `RaftStateMachine` typeclass now has a function
+  `preprocessCmd` for applications that need the leader to manipulate the
+  command before it is made into a log entry and applied to the state machine.
 - Bug Fix: When running networks of size 2, 'incrCommitIndex' will no longer run
   in an infinite loop when incrementing the leader's commit to the correct N. 
 - Bug Fix: When an invalid client request is submitted, the leader appropriately

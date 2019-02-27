@@ -1,7 +1,11 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Raft.StateMachine (
   RaftStateMachinePure(..),
@@ -40,8 +44,16 @@ class (Monad m, RaftStateMachinePure sm v) => RaftStateMachine m sm v where
   validateCmd :: v -> m (Either (RaftStateMachinePureError sm v) ())
   -- ^ Expensive validation using global state not cacheable in
   -- 'RaftStateMachinePureCtx'
+  preprocessCmd :: v -> m v
+  -- ^ Some state machines need the leader to preprocess commands issued by
+  -- client; e.g. attaching a timestamp before creating the log entry
   askRaftStateMachinePureCtx :: m (RaftStateMachinePureCtx sm v)
   -- ^ Query the 'RaftStateMachinePureCtx' value from the monadic context
+
+  -- Preprocessing a command is not always needed, therefore the default
+  -- implementation is to just return the command unchanged.
+  default preprocessCmd :: v -> m v
+  preprocessCmd = return
 
 data EntryValidation
   = NoMonadicValidation
@@ -68,18 +80,19 @@ applyLogEntry validation sm entry =
 -- user to specify whether or not to monadically validate the command in
 -- addition to the pure validation logic.
 applyLogCmd
-  :: RaftStateMachine m sm cmd
+  :: forall sm cmd m. RaftStateMachine m sm cmd
   => EntryValidation
   -> sm
   -> cmd
   -> m (Either (RaftStateMachinePureError sm cmd) sm)
 applyLogCmd validation sm cmd = do
+  processedCmd <- preprocessCmd @m @sm cmd
   monadicValidationRes <-
     case validation of
       NoMonadicValidation -> pure (Right ())
-      MonadicValidation -> validateCmd cmd
+      MonadicValidation -> validateCmd processedCmd
   case monadicValidationRes of
     Left err -> pure (Left err)
     Right () -> do
       ctx <- askRaftStateMachinePureCtx
-      pure (rsmTransition ctx sm cmd)
+      pure (rsmTransition ctx sm processedCmd)

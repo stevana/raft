@@ -88,8 +88,7 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
     updateCommitIndex :: FollowerState v -> FollowerState v
     updateCommitIndex followerState =
       case aeEntries of
-        Empty ->
-          followerState { fsCommitIndex = aeLeaderCommit }
+        Empty -> followerState
         _ :|> e ->
           let newCommitIndex = min aeLeaderCommit (entryIndex e)
           in followerState { fsCommitIndex = newCommitIndex }

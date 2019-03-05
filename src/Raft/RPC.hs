@@ -61,8 +61,7 @@ rpcTerm = \case
   RequestVoteResponseRPC rvr -> rvrTerm rvr
 
 data NoEntriesSpec
-  = FromInconsistency
-  | FromHeartbeat
+  = FromHeartbeat
   | FromClientReadReq Int
   deriving (Show)
 

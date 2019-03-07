@@ -40,9 +40,29 @@ import Raft.Types
 -- Candidate
 --------------------------------------------------------------------------------
 
+-- Note: This "rule" is different than the rule for all servers to immediately
+-- convert to follower upon receiving an RPC from another node with a term
+-- _strictly greater than_ the receiving node's current term. In this case,
+-- the candidate steps down if the term in the AE RPC is greater than _or_
+-- equal to its current term.
 handleAppendEntries :: RPCHandler 'Candidate sm (AppendEntries v) v
 handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sender AppendEntries {..} = do
-  pure $ candidateResultState Noop candidateState
+  currentTerm <- gets currentTerm
+  if currentTerm <= aeTerm
+    then becomeFollower
+    else pure $ candidateResultState Noop candidateState
+  where
+    becomeFollower = do
+      resetElectionTimeout
+      pure $ ResultState DiscoverLeader $
+        NodeFollowerState FollowerState
+          { fsCurrentLeader = CurrentLeader (LeaderId sender)
+          , fsCommitIndex = csCommitIndex
+          , fsLastApplied = csLastApplied
+          , fsLastLogEntry = csLastLogEntry
+          , fsTermAtAEPrevIndex = Nothing
+          , fsClientReqCache = csClientReqCache
+          }
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Candidate sm AppendEntriesResponse v

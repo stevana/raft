@@ -72,7 +72,7 @@ deriving instance MonadMask m => MonadMask (RaftSocketT sm v m)
 -- Raft Instances --
 --------------------
 
-instance (MonadMask m, MonadCatch m, MonadIO m, S.Serialize sm, S.Serialize v) => RaftSendClient (RaftSocketT sm v m) sm v where
+instance (RaftStateMachinePure sm v, MonadMask m, MonadCatch m, MonadIO m, S.Serialize sm, S.Serialize v) => RaftSendClient (RaftSocketT sm v m) sm v where
   sendClient clientId msg = do
     NodeSocketEnv{..} <- ask
     mRespVar <- liftIO . atomically . fmap (Map.lookup clientId) . readTVar $ nsClientReqResps

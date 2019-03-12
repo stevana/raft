@@ -3,16 +3,38 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# Language ConstraintKinds #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 
-module Raft.Monad where
+module Raft.Monad (
+
+  MonadRaft
+, MonadRaftChan(..)
+
+, RaftThreadRole(..)
+, MonadRaftFork(..)
+
+, RaftEnv(..)
+, initializeRaftEnv
+, RaftT
+, runRaftT
+
+
+, Raft.Monad.logInfo
+, Raft.Monad.logDebug
+, Raft.Monad.logCritical
+, Raft.Monad.logAndPanic
+
+) where
 
 import Protolude hiding (STM, TChan, readTChan, writeTChan, newTChan, atomically)
 
+import qualified Control.Monad.Metrics as Metrics
 import Control.Monad.Catch
 import Control.Monad.Fail
 import Control.Monad.Trans.Class
@@ -104,18 +126,20 @@ data RaftEnv v m = RaftEnv
   , resetHeartbeatTimer :: m ()
   , raftNodeConfig :: RaftNodeConfig
   , raftNodeLogCtx :: LogCtx (RaftT v m)
+  , raftNodeMetrics :: Metrics.Metrics
   }
 
 newtype RaftT v m a = RaftT
   { unRaftT :: ReaderT (RaftEnv v m) (StateT (RaftNodeState v) m) a
-  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState v), MonadFail, Alternative, MonadPlus)
+  } deriving newtype (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState v), MonadFail, Alternative, MonadPlus)
 
 instance MonadTrans (RaftT v) where
   lift = RaftT . lift . lift
 
-deriving instance MonadIO m => MonadIO (RaftT v m)
-deriving instance MonadThrow m => MonadThrow (RaftT v m)
-deriving instance MonadCatch m => MonadCatch (RaftT v m)
+deriving newtype instance MonadIO m => MonadIO (RaftT v m)
+deriving newtype instance MonadThrow m => MonadThrow (RaftT v m)
+deriving newtype instance MonadCatch m => MonadCatch (RaftT v m)
+deriving newtype instance MonadMask m => MonadMask (RaftT v m)
 
 instance MonadRaftFork m => MonadRaftFork (RaftT v m) where
   type RaftThreadId (RaftT v m) = RaftThreadId m
@@ -125,7 +149,29 @@ instance MonadRaftFork m => MonadRaftFork (RaftT v m) where
     lift $ raftFork s (runRaftT raftState raftEnv m)
 
 instance Monad m => RaftLogger v (RaftT v m) where
-  loggerCtx = (,) <$> asks (configNodeId . raftNodeConfig) <*> get
+  loggerCtx = (,) <$> asks (raftConfigNodeId . raftNodeConfig) <*> get
+
+instance Monad m => Metrics.MonadMetrics (RaftT v m) where
+  getMetrics = asks raftNodeMetrics
+
+initializeRaftEnv
+  :: MonadIO m
+  => RaftEventChan v m
+  -> m ()
+  -> m ()
+  -> RaftNodeConfig
+  -> LogCtx (RaftT v m)
+  -> m (RaftEnv v m)
+initializeRaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logCtx = do
+  metrics <- liftIO Metrics.initialize
+  pure RaftEnv
+    { eventChan = eventChan
+    , resetElectionTimer = resetElectionTimer
+    , resetHeartbeatTimer = resetHeartbeatTimer
+    , raftNodeConfig = nodeConfig
+    , raftNodeLogCtx = logCtx
+    , raftNodeMetrics = metrics
+    }
 
 runRaftT
   :: Monad m
@@ -139,6 +185,9 @@ runRaftT raftNodeState raftEnv =
 ------------------------------------------------------------------------------
 -- Logging
 ------------------------------------------------------------------------------
+
+logInfo :: MonadIO m => Text -> RaftT v m ()
+logInfo msg = flip logInfoIO msg =<< asks raftNodeLogCtx
 
 logDebug :: MonadIO m => Text -> RaftT v m ()
 logDebug msg = flip logDebugIO msg =<< asks raftNodeLogCtx

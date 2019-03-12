@@ -15,14 +15,7 @@ import Data.Sequence (Seq(..))
 
 import Raft.Client
 import Raft.Log
-import Raft.Client (SerialNum)
 import Raft.Types
-
-data Mode
-  = Follower
-  | Candidate
-  | Leader
-  deriving (Show)
 
 -- | All valid state transitions of a Raft node
 data Transition (init :: Mode) (res :: Mode) where

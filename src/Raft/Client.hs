@@ -26,8 +26,11 @@ module Raft.Client
 -- ** Client Requests
 , ClientRequest(..)
 , ClientReq(..)
+, ClientReqType(..)
 , ClientReadReq(..)
 , ReadEntriesSpec(..)
+, ClientWriteReq(..)
+, ClientMetricsReq(..)
 
 -- ** Client Responses
 , ClientResponse(..)
@@ -94,6 +97,7 @@ import System.Timeout.Lifted (timeout)
 
 import Raft.Log (Entry, Entries, ReadEntriesSpec)
 import Raft.StateMachine
+import Raft.Metrics (RaftNodeMetrics)
 import Raft.Types
 
 --------------------------------------------------------------------------------
@@ -103,10 +107,7 @@ import Raft.Types
 {- This is the interface with which Raft nodes interact with client programs -}
 
 -- | Interface for Raft nodes to send messages to clients
---
--- TODO It would be really nice if 'RSMP' was a superclass, but currently this
--- can't happen because of cyclic imports.
-class RaftSendClient m sm v where
+class RaftStateMachinePure sm v => RaftSendClient m sm v where
   sendClient :: ClientId -> ClientResponse sm v -> m ()
 
 -- | Interface for Raft nodes to receive messages from clients
@@ -128,7 +129,8 @@ instance S.Serialize v => S.Serialize (ClientRequest v)
 -- | Representation of a client request
 data ClientReq v
   = ClientReadReq ClientReadReq -- ^ Request the latest state of the state machine
-  | ClientWriteReq SerialNum v -- ^ Write a command
+  | ClientWriteReq (ClientWriteReq v) -- ^ Write a command
+  | ClientMetricsReq ClientMetricsReq -- ^ Request the metrics of a raft node
   deriving (Show, Generic)
 
 instance S.Serialize v => S.Serialize (ClientReq v)
@@ -137,6 +139,22 @@ data ClientReadReq
   = ClientReadEntries ReadEntriesSpec
   | ClientReadStateMachine
   deriving (Show, Generic, S.Serialize)
+
+data ClientWriteReq v
+  = ClientCmdReq SerialNum v -- ^ Issue a command to update the state machine
+  deriving (Show, Generic, S.Serialize)
+
+data ClientMetricsReq
+  = ClientAllMetricsReq
+  deriving (Show, Generic, S.Serialize)
+
+-- | Typeclass to make it easier to write polymorphic functions over ClientReq
+-- types
+class ClientReqType a v
+
+instance ClientReqType ClientReadReq v
+instance ClientReqType (ClientWriteReq v) v
+instance ClientReqType ClientMetricsReq v
 
 --------------------------------------------------------------------------------
 -- Client Responses
@@ -147,6 +165,7 @@ data ClientRespSpec sm v
   = ClientReadRespSpec (ClientReadRespSpec sm)
   | ClientWriteRespSpec (ClientWriteRespSpec sm v)
   | ClientRedirRespSpec CurrentLeader
+  | ClientMetricsRespSpec RaftNodeMetrics
   deriving (Generic)
 
 deriving instance (Show sm, Show v, Show (RaftStateMachinePureError sm v)) => Show (ClientRespSpec sm v)
@@ -175,6 +194,8 @@ data ClientResponse sm v
     -- ^ Respond with the index of the entry appended to the log
   | ClientRedirectResponse ClientRedirResp
     -- ^ Respond with the node id of the current leader
+  | ClientMetricsResponse ClientMetricsResp
+    -- ^ Respond with the node's current metrics
   deriving (Generic)
 
 deriving instance (Show sm, Show v, Show (ClientWriteResp sm v)) => Show (ClientResponse sm v)
@@ -200,6 +221,10 @@ deriving instance (S.Serialize sm, S.Serialize v, S.Serialize (RaftStateMachineP
 -- | Representation of a redirect response to a client
 data ClientRedirResp
   = ClientRedirResp CurrentLeader
+  deriving (Show, Generic, S.Serialize)
+
+data ClientMetricsResp
+  = ClientMetricsResp RaftNodeMetrics
   deriving (Show, Generic, S.Serialize)
 
 --------------------------------------------------------------------------------
@@ -412,7 +437,7 @@ clientSendWrite
   -> RaftClientT s v m (Either (RaftClientSendError m v) ())
 clientSendWrite v = do
   gets raftClientSerialNum >>= \sn ->
-    clientSend (ClientWriteReq sn v)
+    clientSend (ClientWriteReq (ClientCmdReq sn v))
 
 -- | Send a write request to a specific raft node, ignoring the current
 -- leader. This function is used in testing.
@@ -423,7 +448,7 @@ clientSendWriteTo
   -> RaftClientT s v m (Either (RaftClientSendError m v) ())
 clientSendWriteTo nid v =
   gets raftClientSerialNum >>= \sn ->
-    clientSendTo nid (ClientWriteReq sn v)
+    clientSendTo nid (ClientWriteReq (ClientCmdReq sn v))
 
 -- | Send a request to the current leader. Nonblocking.
 clientSend

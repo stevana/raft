@@ -22,7 +22,6 @@ import Control.Monad.Catch
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 
-import System.Random
 import System.FilePath ((</>))
 import qualified System.Directory as Directory
 
@@ -34,8 +33,6 @@ import Raft.Config
 import Raft.Log
 import Raft.Log.PostgreSQL
 
-
-import qualified Examples.Raft.Socket.Node as RS
 import Examples.Raft.Socket.Node
 import qualified Examples.Raft.Socket.Common as RS
 import Examples.Raft.FileStore.Log
@@ -92,16 +89,15 @@ nodeMain storageState storageType nid nids = do
           runRaftPersistFileStoreT nPersistFile $ do
             let allNodeIds = Set.fromList (nid : nids)
             let nodeConfig = RaftNodeConfig
-                              { configNodeId = toS nid
-                              , configNodeIds = allNodeIds
+                              { raftConfigNodeId = toS nid
+                              , raftConfigNodeIds = allNodeIds
                               -- These are recommended timeouts from the original
                               -- raft paper and the ARC report.
-                              , configElectionTimeout = (150000, 300000)
-                              , configHeartbeatTimeout = 50000
-                              , configStorageState = storageState
+                              , raftConfigElectionTimeout = (150000, 300000)
+                              , raftConfigHeartbeatTimeout = 50000
+                              , raftConfigStorageState = storageState
                               }
-            electionTimerSeed <- liftIO randomIO
-            runRaftNode nodeConfig (LogCtx LogStdout Debug) electionTimerSeed (mempty :: Store)
+            runRaftNode nodeConfig defaultOptionalRaftNodeConfig (LogCtx LogStdout Debug) (mempty :: Store)
 
 cleanStorage :: FilePath -> LogStorage -> IO ()
 cleanStorage nodeDir ls = do
@@ -139,4 +135,3 @@ mkExampleDir nid = do
   tmpDir <- Directory.getTemporaryDirectory
   let nodeDir = tmpDir </> toS nid
   pure nodeDir
-

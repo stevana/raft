@@ -56,25 +56,25 @@ pairMsToMicroS = bimap msToMicroS msToMicroS
 
 testConfig0, testConfig1, testConfig2 :: RaftNodeConfig
 testConfig0 = RaftNodeConfig
-  { configNodeId = node0
-  , configNodeIds = nodeIds
-  , configElectionTimeout = pairMsToMicroS (150, 300)
-  , configHeartbeatTimeout = msToMicroS 50
-  , configStorageState = New
+  { raftConfigNodeId = node0
+  , raftConfigNodeIds = nodeIds
+  , raftConfigElectionTimeout = pairMsToMicroS (150, 300)
+  , raftConfigHeartbeatTimeout = msToMicroS 50
+  , raftConfigStorageState = New
   }
 testConfig1 = RaftNodeConfig
-  { configNodeId = node1
-  , configNodeIds = nodeIds
-  , configElectionTimeout = pairMsToMicroS (150, 300)
-  , configHeartbeatTimeout = msToMicroS 50
-  , configStorageState = New
+  { raftConfigNodeId = node1
+  , raftConfigNodeIds = nodeIds
+  , raftConfigElectionTimeout = pairMsToMicroS (150, 300)
+  , raftConfigHeartbeatTimeout = msToMicroS 50
+  , raftConfigStorageState = New
   }
 testConfig2 = RaftNodeConfig
-  { configNodeId = node2
-  , configNodeIds = nodeIds
-  , configElectionTimeout = pairMsToMicroS (150, 300)
-  , configHeartbeatTimeout = msToMicroS 50
-  , configStorageState = New
+  { raftConfigNodeId = node2
+  , raftConfigNodeIds = nodeIds
+  , raftConfigElectionTimeout = pairMsToMicroS (150, 300)
+  , raftConfigHeartbeatTimeout = msToMicroS 50
+  , raftConfigStorageState = New
   }
 
 -- | Zip maps using function. Throws away items left and right

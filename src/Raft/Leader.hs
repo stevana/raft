@@ -13,7 +13,8 @@ module Raft.Leader (
   , handleRequestVote
   , handleRequestVoteResponse
   , handleTimeout
-  , handleClientRequest
+  , handleClientReadRequest
+  , handleClientWriteRequest
 ) where
 
 import Protolude
@@ -24,7 +25,7 @@ import Data.Sequence (Seq(Empty))
 import qualified Data.Set as Set
 import qualified Data.Sequence as Seq
 
-import Raft.Config (configNodeIds)
+import Raft.Config (raftConfigNodeIds)
 import Raft.NodeState
 import Raft.RPC
 import Raft.Action
@@ -72,7 +73,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
   where
     handleReadReq :: Int -> LeaderState v -> TransitionM sm v (ResultState 'Leader v)
     handleReadReq n leaderState = do
-      networkSize <- Set.size <$> asks (configNodeIds . nodeConfig)
+      networkSize <- Set.size <$> asks (raftConfigNodeIds . nodeConfig)
       let initReadReqs = lsReadRequest leaderState
           (mCreqData, newReadReqs) =
             case Map.lookup n initReadReqs of
@@ -118,50 +119,42 @@ handleTimeout (NodeLeaderState ls) timeout =
       broadcast (SendAppendEntriesRPC aeData)
       pure (leaderResultState SendHeartbeat ls)
 
--- | The leader handles all client requests, responding with the current state
--- machine on a client read, and appending an entry to the log on a valid client
--- write.
-handleClientRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader sm v
-handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) = do
-    case cr of
-      ClientReadReq crr ->
-        leaderResultState HandleClientReq <$> handleClientReadReq crr
-      ClientWriteReq newSerial v ->
-        leaderResultState HandleClientReq <$> handleClientWriteReq newSerial v
-  where
-    handleClientReadReq crr = do
-      heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
-      broadcast (SendAppendEntriesRPC heartbeat)
-      let clientReqData = ClientReadReqData cid crr
-      pure ls {
-        lsReadRequest =
-          Map.insert lsReadReqsHandled (clientReqData, 1) lsReadRequest
-      }
+handleClientReadRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader ClientReadReq sm v
+handleClientReadRequest (NodeLeaderState ls@LeaderState{..}) cid crr = do
+  heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
+  broadcast (SendAppendEntriesRPC heartbeat)
+  let clientReqData = ClientReadReqData cid crr
+  pure $ leaderResultState HandleClientReq ls {
+    lsReadRequest =
+      Map.insert lsReadReqsHandled (clientReqData, 1) lsReadRequest
+  }
 
-    handleClientWriteReq newSerial v =
-      case Map.lookup cid lsClientReqCache of
-        -- This is important case #1
-        Nothing -> handleNewEntry newSerial v
-        Just (currSerial, mResp)
-          | newSerial < currSerial -> do
-              let debugMsg s1 s2 = "Ignoring serial number " <> s1 <> ", current serial is " <> s2
-              logDebug $ debugMsg (show newSerial) (show currSerial)
-              pure ls
-          | currSerial == newSerial -> do
-              case mResp of
-                Nothing -> logDebug $ "Serial " <> show currSerial <> " already exists. Ignoring repeat request."
-                Just idx -> respondClientWrite cid idx newSerial
-              pure ls
-          -- This is important case #2, where newSerial > currSerial
-          | otherwise -> handleNewEntry newSerial v
-      where
-        handleNewEntry serial cmd = do
-          let lsClientReqCache' = Map.insert cid (serial, Nothing) lsClientReqCache
-          newLogEntry <- mkNewLogEntry cmd serial
-          appendLogEntries (Empty Seq.|> newLogEntry)
-          aeData <- mkAppendEntriesData ls (FromClientWriteReq newLogEntry)
-          broadcast (SendAppendEntriesRPC aeData)
-          pure ls { lsClientReqCache = lsClientReqCache' }
+handleClientWriteRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader (ClientWriteReq v) sm v
+handleClientWriteRequest (NodeLeaderState ls@LeaderState{..}) cid (ClientCmdReq serial v) =
+  leaderResultState HandleClientReq <$>
+    case Map.lookup cid lsClientReqCache of
+      -- This is important case #1
+      Nothing -> handleNewEntry serial v
+      Just (currSerial, mResp)
+        | serial < currSerial -> do
+            let debugMsg s1 s2 = "Ignoring serial number " <> s1 <> ", current serial is " <> s2
+            logDebug $ debugMsg (show serial) (show currSerial)
+            pure ls
+        | currSerial == serial -> do
+            case mResp of
+              Nothing -> logDebug $ "Serial " <> show currSerial <> " already exists. Ignoring repeat request."
+              Just idx -> respondClientWrite cid idx serial
+            pure ls
+        -- This is important case #2, where serial > currSerial
+        | otherwise -> handleNewEntry serial v
+  where
+    handleNewEntry serial cmd = do
+      let lsClientReqCache' = Map.insert cid (serial, Nothing) lsClientReqCache
+      newLogEntry <- mkNewLogEntry cmd serial
+      appendLogEntries (Empty Seq.|> newLogEntry)
+      aeData <- mkAppendEntriesData ls (FromClientWriteReq newLogEntry)
+      broadcast (SendAppendEntriesRPC aeData)
+      pure ls { lsClientReqCache = lsClientReqCache' }
 
     mkNewLogEntry v sn = do
       currentTerm <- currentTerm <$> get
@@ -173,7 +166,6 @@ handleClientRequest (NodeLeaderState ls@LeaderState{..}) (ClientRequest cid cr) 
         , entryIssuer = ClientIssuer cid sn
         , entryPrevHash = hashLastLogEntry lsLastLogEntry
         }
-
 
 --------------------------------------------------------------------------------
 

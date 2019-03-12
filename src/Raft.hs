@@ -129,14 +129,16 @@ import Raft.Persistent
 import Raft.RPC
 import Raft.StateMachine
 import Raft.Types
+import qualified Raft.Metrics as Metrics
 
+import qualified System.Remote.Monitoring as EKG
 
 -- | Run timers, RPC and client request handlers and start event loop.
 -- It should run forever
 runRaftNode
   :: forall m sm v.
      ( Typeable m, Show v, Show sm, Serialize v, Show (Action sm v), Show (RaftLogError m), Show (RaftStateMachinePureError sm v)
-     , MonadIO m, MonadCatch m, MonadFail m, MonadRaft v m
+     , MonadIO m, MonadCatch m, MonadFail m, MonadMask m, MonadRaft v m
      , RaftStateMachine m sm v
      , RaftSendRPC m v
      , RaftRecvRPC m v
@@ -147,25 +149,42 @@ runRaftNode
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
-   => RaftNodeConfig       -- ^ Node configuration
-   -> LogCtx (RaftT v m)   -- ^ Logs destination
-   -> Int                  -- ^ Timer seed
-   -> sm                   -- ^ Initial state machine state
+   => RaftNodeConfig         -- ^ Node configuration
+   -> OptionalRaftNodeConfig -- ^ Config values that can be provided optionally
+   -> LogCtx (RaftT v m)     -- ^ The means with which to log messages
+   -> sm                     -- ^ Initial state machine state
    -> m ()
-runRaftNode nodeConfig@RaftNodeConfig{..} logCtx timerSeed initRaftStateMachine = do
-  -- Initialize the persistent state and logs storage if specified
-  initializeStorage
+runRaftNode nodeConfig@RaftNodeConfig{..} optConfig logCtx initStateMachine = do
 
+  -- Resolve the optional config values
+  metricsPort <- liftIO (resolveMetricsPort (raftConfigMetricsPort optConfig))
+  timerSeed <- liftIO (resolveTimerSeed (raftConfigTimerSeed optConfig))
+
+
+  -- Initialize the persistent state and logs storage if specified
+  initializeStorage raftConfigStorageState
+
+  -- Initialize the main event channel
   eventChan <- newRaftChan @v
 
   -- Create timers and reset timer actions
-  electionTimer <- liftIO $ newTimerRange timerSeed configElectionTimeout
-  heartbeatTimer <- liftIO $ newTimer configHeartbeatTimeout
+  electionTimer <- liftIO $ newTimerRange timerSeed raftConfigElectionTimeout
+  heartbeatTimer <- liftIO $ newTimer raftConfigHeartbeatTimeout
   let resetElectionTimer = liftIO $ void $ resetTimer electionTimer
       resetHeartbeatTimer = liftIO $ void $ resetTimer heartbeatTimer
 
-  let raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logCtx
+  raftEnv <- initializeRaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logCtx
   runRaftT initRaftNodeState raftEnv $ do
+
+    -- Fork the monitoring server for metrics
+    case metricsPort of
+      Nothing -> pure ()
+      Just port -> do
+        logInfo ("Forking metrics server on port " <> show port <> "...")
+        metricsStore <- Metrics.getMetricsStore
+        void $ liftIO (EKG.forkServerWith metricsStore "localhost" (fromIntegral port))
+
+    logInfo ("Initialized election timer with seed " <> show timerSeed <> "...")
 
     -- These event producers need access to logging, thus they live in RaftT
     --
@@ -182,11 +201,11 @@ runRaftNode nodeConfig@RaftNodeConfig{..} logCtx timerSeed initRaftStateMachine 
     raftFork ClientRequestHandler (clientReqHandler @m @v eventChan)
 
     -- Start the main event handling loop
-    handleEventLoop initRaftStateMachine
+    handleEventLoop initStateMachine
 
   where
-    initializeStorage =
-      case configStorageState of
+    initializeStorage storageState =
+      case storageState of
         New -> do
           ipsRes <- initializePersistentState
           case ipsRes of
@@ -201,7 +220,7 @@ runRaftNode nodeConfig@RaftNodeConfig{..} logCtx timerSeed initRaftStateMachine 
 handleEventLoop
   :: forall sm v m.
      ( Show v, Serialize v, Show sm, Show (Action sm v), Show (RaftLogError m), Typeable m
-     , MonadIO m, MonadRaft v m, MonadFail m, MonadThrow m
+     , MonadIO m, MonadRaft v m, MonadFail m, MonadThrow m, MonadMask m
      , RaftStateMachine m sm v
      , Show (RaftStateMachinePureError sm v)
      , RaftPersist m
@@ -214,12 +233,12 @@ handleEventLoop
      )
   => sm
   -> RaftT v m ()
-handleEventLoop initRaftStateMachine = do
+handleEventLoop initStateMachine = do
     setInitLastLogEntry
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throwM err
-      Right pstate -> handleEventLoop' initRaftStateMachine pstate
+      Right pstate -> handleEventLoop' initStateMachine pstate
   where
 
     -- Some events must be validated before being processed by the system:
@@ -239,10 +258,13 @@ handleEventLoop initRaftStateMachine = do
           case event of
             MessageEvent (ClientRequestEvent (ClientRequest cid creq)) ->
               case creq of
-                ClientWriteReq serial cmd -> do
+                ClientWriteReq (ClientCmdReq serial cmd) -> do
                   eRes <- lift (applyLogCmd MonadicValidation stateMachine cmd)
                   case eRes of
                     Left err -> do
+                      -- Increments the number of invalid commands seen during
+                      -- the lifetime of this node.
+                      Metrics.incrInvalidCmdCounter
                       let clientWriteRespSpec = ClientWriteRespSpec (ClientWriteRespSpecFail serial err)
                           clientFailRespAction = RespondToClient cid clientWriteRespSpec
                       handleAction clientFailRespAction
@@ -256,10 +278,16 @@ handleEventLoop initRaftStateMachine = do
     handleEventLoop' :: sm -> PersistentState -> RaftT v m ()
     handleEventLoop' stateMachine persistentState = do
 
+      Metrics.incrEventsHandledCounter
+
       mRes <-
         withValidatedEvent stateMachine $ \event -> do
           loadLogEntryTermAtAePrevLogIndex event
           raftNodeState <- get
+
+          -- Set the RaftNodeStateLabel metric
+          Metrics.setRaftNodeStateLabel (nodeMode raftNodeState)
+
           logDebug $ "[Event]: " <> show event
           logDebug $ "[NodeState]: " <> show raftNodeState
           logDebug $ "[State Machine]: " <> show stateMachine
@@ -267,7 +295,8 @@ handleEventLoop initRaftStateMachine = do
 
           -- Perform core state machine transition, handling the current event
           nodeConfig <- asks raftNodeConfig
-          let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
+          raftNodeMetrics <- Metrics.getRaftNodeMetrics
+          let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState raftNodeMetrics
           pure (Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event)
 
       case mRes of
@@ -323,9 +352,10 @@ handleEventLoop initRaftStateMachine = do
         Right (Just e) ->
           put (RaftNodeState (setLastLogEntry rns (singleton e)))
 
+-- | Handles all actions produced by the main 'handleEventLoop'' call.
 handleActions
   :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m), Typeable m
-     , MonadIO m, MonadRaft v m, MonadThrow m
+     , MonadIO m, MonadRaft v m, MonadThrow m, MonadMask m
      , RaftStateMachine m sm v
      , RaftSendRPC m v
      , RaftSendClient m sm v
@@ -334,7 +364,7 @@ handleActions
      )
   => [Action sm v]
   -> RaftT v m ()
-handleActions actions =
+handleActions actions = do
   mapM_ handleAction actions
 
 handleAction
@@ -436,7 +466,7 @@ handleAction action = do
     mkRPCfromSendRPCAction sendRPCAction = do
       RaftNodeState ns <- get
       nodeConfig <- asks raftNodeConfig
-      RPCMessage (configNodeId nodeConfig) <$>
+      RPCMessage (raftConfigNodeId nodeConfig) <$>
         case sendRPCAction of
           SendAppendEntriesRPC aeData -> do
             (entries, prevLogIndex, prevLogTerm, aeReadReq) <-
@@ -456,7 +486,7 @@ handleAction action = do
                         (_,prevLogIdx, prevLogTerm) <- mkPrevEntryDataByEntry e
                         pure (prevLogIdx, prevLogTerm)
                   pure (Empty, prevLogIdx, prevLogTerm, readReq)
-            let leaderId = LeaderId (configNodeId nodeConfig)
+            let leaderId = LeaderId (raftConfigNodeId nodeConfig)
             pure . toRPC $
               AppendEntries
                 { aeTerm = aedTerm aeData

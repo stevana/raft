@@ -8,13 +8,11 @@
 module QuickCheckStateMachine where
 
 import           Control.Concurrent            (threadDelay)
-import           Control.Exception             (bracket)
 import           Control.Monad.IO.Class        (liftIO)
 import           Data.Bifunctor                (bimap)
 import           Data.Char                     (isDigit, toLower)
 import           Data.List                     (isInfixOf, (\\))
 import           Data.Maybe                    (isJust, isNothing)
-import qualified Data.Set                      as Set
 import           Data.TreeDiff                 (ToExpr)
 import           GHC.Generics                  (Generic, Generic1)
 import           Prelude                       hiding (notElem)
@@ -33,7 +31,7 @@ import           System.Timeout                (timeout)
 import           Test.QuickCheck               (Gen, Property, arbitrary,
                                                 elements, frequency,
                                                 noShrinking, shrink,
-                                                verboseCheck, withMaxSuccess,
+                                                withMaxSuccess,
                                                 (===))
 import           Test.QuickCheck.Monadic       (monadicIO)
 import           Test.StateMachine             (Concrete, GenSym, Logic (..),
@@ -43,7 +41,7 @@ import           Test.StateMachine             (Concrete, GenSym, Logic (..),
                                                 genSym, opaque, prettyCommands,
                                                 reference, runCommands, (.&&),
                                                 (.//), (.<), (.==), (.>=))
-import           Test.StateMachine.Types       (Command(..), Commands (..), Reference(..), Symbolic(..), Var(..))
+import           Test.StateMachine.Types       (Commands (..))
 import qualified Test.StateMachine.Types.Rank2 as Rank2
 import           Text.Read                     (readEither)
 

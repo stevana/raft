@@ -128,7 +128,7 @@ clientRepl :: [ByteString] -> IO ()
 clientRepl nodes = do
   let clientHost = "localhost"
   clientPort <- RS.getFreePort
-  let clientId = ClientId $ RS.hostPortToNid (clientHost, clientPort)
+  let clientId = ClientId $ RS.hostPortToNid (clientHost, show clientPort)
   clientRespChan <- RS.newClientRespChan
   RS.runRaftSocketClientM clientId mempty clientRespChan $ do
     evalRepl (pure ">>> ")

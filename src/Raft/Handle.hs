@@ -19,6 +19,7 @@ import qualified Raft.Leader as Leader
 
 import Raft.Action
 import Raft.Event
+import Raft.Client
 import Raft.Transition
 import Raft.NodeState
 import Raft.Persistent
@@ -98,7 +99,8 @@ data RaftHandler ns sm v = RaftHandler
   , handleRequestVote :: RPCHandler ns sm RequestVote v
   , handleRequestVoteResponse :: RPCHandler ns sm RequestVoteResponse v
   , handleTimeout :: TimeoutHandler ns sm v
-  , handleClientRequest :: ClientReqHandler ns sm v
+  , handleClientReadRequest :: ClientReqHandler ns ClientReadReq sm v
+  , handleClientWriteRequest :: ClientReqHandler ns (ClientWriteReq v) sm v
   }
 
 followerRaftHandler :: (Show v, Serialize v) => RaftHandler 'Follower sm v
@@ -108,7 +110,8 @@ followerRaftHandler = RaftHandler
   , handleRequestVote = Follower.handleRequestVote
   , handleRequestVoteResponse = Follower.handleRequestVoteResponse
   , handleTimeout = Follower.handleTimeout
-  , handleClientRequest = Follower.handleClientRequest
+  , handleClientReadRequest = Follower.handleClientReadRequest
+  , handleClientWriteRequest = Follower.handleClientWriteRequest
   }
 
 candidateRaftHandler :: (Show v, Serialize v) => RaftHandler 'Candidate sm v
@@ -118,7 +121,8 @@ candidateRaftHandler = RaftHandler
   , handleRequestVote = Candidate.handleRequestVote
   , handleRequestVoteResponse = Candidate.handleRequestVoteResponse
   , handleTimeout = Candidate.handleTimeout
-  , handleClientRequest = Candidate.handleClientRequest
+  , handleClientReadRequest = Candidate.handleClientReadRequest
+  , handleClientWriteRequest = Candidate.handleClientWriteRequest
   }
 
 leaderRaftHandler :: (Show v, Serialize v) => RaftHandler 'Leader sm v
@@ -128,7 +132,8 @@ leaderRaftHandler = RaftHandler
   , handleRequestVote = Leader.handleRequestVote
   , handleRequestVoteResponse = Leader.handleRequestVoteResponse
   , handleTimeout = Leader.handleTimeout
-  , handleClientRequest = Leader.handleClientRequest
+  , handleClientReadRequest = Leader.handleClientReadRequest
+  , handleClientWriteRequest = Leader.handleClientWriteRequest
   }
 
 mkRaftHandler :: forall ns sm v. (Show v, Serialize v) => NodeState ns v -> RaftHandler ns sm v
@@ -152,10 +157,8 @@ handleEvent' initNodeState transitionEnv persistentState event =
         MessageEvent mev ->
           case mev of
             RPCMessageEvent rpcMsg -> handleRPCMessage rpcMsg
-            ClientRequestEvent cr -> do
-              handleClientRequest initNodeState cr
-        TimeoutEvent _ tout -> do
-          handleTimeout initNodeState tout
+            ClientRequestEvent clientReq -> handleClientRequest clientReq
+        TimeoutEvent _ tout -> handleTimeout initNodeState tout
   where
     RaftHandler{..} = mkRaftHandler initNodeState
 
@@ -170,3 +173,16 @@ handleEvent' initNodeState transitionEnv persistentState event =
           handleRequestVote initNodeState sender requestVote
         RequestVoteResponseRPC requestVoteResp ->
           handleRequestVoteResponse initNodeState sender requestVoteResp
+
+    handleClientRequest :: ClientRequest v -> TransitionM sm v (ResultState ns v)
+    handleClientRequest (ClientRequest cid cr) =
+      case cr of
+        ClientReadReq crr -> handleClientReadRequest initNodeState cid crr
+        ClientWriteReq cwr -> handleClientWriteRequest initNodeState cid cwr
+        -- All nodes handle this request the same
+        ClientMetricsReq _ -> do
+          respondClientMetrics cid
+          pure $ case initNodeState of
+            NodeFollowerState fs -> followerResultState Noop fs
+            NodeCandidateState cs -> candidateResultState Noop cs
+            NodeLeaderState ls -> leaderResultState Noop ls

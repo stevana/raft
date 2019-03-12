@@ -27,13 +27,18 @@ nidToHostPort bs =
     _ -> panic "nidToHostPort: invalid node id"
 
 -- | Get a free port number.
-getFreePort :: IO N.ServiceName
+getFreePort :: IO NS.PortNumber
 getFreePort = do
-  sock <- NS.socket NS.AF_INET NS.Stream NS.defaultProtocol
-  NS.bind sock (NS.SockAddrInet NS.aNY_PORT NS.iNADDR_ANY)
-  port <- NS.socketPort sock
-  NS.close sock
-  pure $ show port
+  let hints = NS.defaultHints { NS.addrFlags = [NS.AI_NUMERICHOST, NS.AI_NUMERICSERV], NS.addrSocketType = NS.Stream }
+  addrs <- NS.getAddrInfo (Just hints) (Just "127.0.0.1") (Just "0")
+  case addrs of
+     [] -> panic "No free port available!"
+     addr:_ -> do
+       sock <- NS.socket (NS.addrFamily addr) (NS.addrSocketType addr) (NS.addrProtocol addr)
+       NS.bind sock (NS.addrAddress addr)
+       freePort <- NS.socketPort sock
+       NS.close sock
+       pure freePort
 
 -- | Receive bytes on a socket until an entire message can be decoded.
 -- This function fixes the deserialization of the bytes sent on the socket to

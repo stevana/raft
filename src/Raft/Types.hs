@@ -44,6 +44,16 @@ data CurrentLeader
   deriving stock (Show, Eq, Generic)
   deriving anyclass (Serialize)
 
+----------------
+-- Node State --
+----------------
+
+data Mode
+  = Follower
+  | Candidate
+  | Leader
+  deriving (Show, Read)
+
 ----------
 -- Term --
 ----------

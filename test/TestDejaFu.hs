@@ -114,7 +114,7 @@ instance Exception RaftTestError
 throwTestErr = throw . RaftTestError
 
 askSelfNodeId :: RaftTestM NodeId
-askSelfNodeId = asks (configNodeId . testRaftNodeConfig)
+askSelfNodeId = asks (raftConfigNodeId . testRaftNodeConfig)
 
 lookupNodeEventChan :: NodeId -> RaftTestM TestEventChan
 lookupNodeEventChan nid = do
@@ -281,14 +281,14 @@ initRaftTestEnvs eventChans clientRespChans = (testNodeEnvs, testStates)
       replicate (length nodeIds) (TestNodeState mempty initPersistentState)
 
 runTestNode :: TestNodeEnv -> TestNodeStates -> ConcIO ()
-runTestNode testEnv testState = do
-    runRaftTestM testEnv testState $
+runTestNode testEnv testState =
+    runRaftTestM testEnv testState $ do
+      raftEnv <- initializeRaftEnv eventChan dummyTimer dummyTimer (testRaftNodeConfig testEnv) NoLogs
       runRaftT initRaftNodeState raftEnv $
         handleEventLoop (mempty :: Store)
   where
-    nid = configNodeId (testRaftNodeConfig testEnv)
+    nid = raftConfigNodeId (testRaftNodeConfig testEnv)
     Just eventChan = Map.lookup nid (testNodeEventChans testEnv)
-    raftEnv = RaftEnv eventChan dummyTimer dummyTimer (testRaftNodeConfig testEnv) NoLogs
     dummyTimer = pure ()
 
 forkTestNodes :: [TestNodeEnv] -> TestNodeStates -> ConcIO [ThreadId ConcIO]

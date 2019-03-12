@@ -15,7 +15,8 @@ module Raft.Candidate (
   , handleRequestVote
   , handleRequestVoteResponse
   , handleTimeout
-  , handleClientRequest
+  , handleClientReadRequest
+  , handleClientWriteRequest
 ) where
 
 import Protolude
@@ -87,7 +88,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
       | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
       | otherwise -> do
           let newCsVotes = Set.insert sender csVotes
-          cNodeIds <- asks (configNodeIds . nodeConfig)
+          cNodeIds <- asks (raftConfigNodeIds . nodeConfig)
           if not $ hasMajority cNodeIds newCsVotes
             then do
               let newCandidateState = candidateState { csVotes = newCsVotes }
@@ -103,7 +104,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
     mkNoopEntry = do
       let lastLogEntryIdx = lastLogEntryIndex csLastLogEntry
       currTerm <- gets currentTerm
-      nid <- asks (configNodeId . nodeConfig)
+      nid <- asks (raftConfigNodeId . nodeConfig)
       pure Entry
         { entryIndex = succ lastLogEntryIdx
         , entryTerm  = currTerm
@@ -148,11 +149,17 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
       candidateResultState RestartElection <$>
         startElection csCommitIndex csLastApplied csLastLogEntry csClientReqCache
 
+handleClientReadRequest :: ClientReqHandler 'Candidate ClientReadReq sm v
+handleClientReadRequest = handleClientRequest
+
+handleClientWriteRequest :: ClientReqHandler 'Candidate (ClientWriteReq v) sm v
+handleClientWriteRequest = handleClientRequest
+
 -- | When candidates handle a client request, they respond with NoLeader, as the
 -- very reason they are candidate is because there is no leader. This is done
 -- instead of simply not responding such that the client can know that the node
 -- is live but that there is an election taking place.
-handleClientRequest :: ClientReqHandler 'Candidate sm v
-handleClientRequest (NodeCandidateState candidateState) (ClientRequest clientId _) = do
-  redirectClientToLeader clientId NoLeader
+handleClientRequest :: ClientReqHandler 'Candidate cr sm v
+handleClientRequest (NodeCandidateState candidateState) cid _ = do
+  redirectClientToLeader cid NoLeader
   pure (candidateResultState Noop candidateState)

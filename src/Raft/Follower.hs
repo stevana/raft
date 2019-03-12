@@ -13,7 +13,8 @@ module Raft.Follower (
   , handleRequestVote
   , handleRequestVoteResponse
   , handleTimeout
-  , handleClientRequest
+  , handleClientReadRequest
+  , handleClientWriteRequest
 ) where
 
 import Protolude
@@ -149,9 +150,20 @@ handleTimeout ns@(NodeFollowerState fs) timeout =
     -- Follower should ignore heartbeat timeout events
     HeartbeatTimeout -> pure (followerResultState Noop fs)
 
+
 -- | When a client handles a client request, it redirects the client to the
 -- current leader by responding with the current leader id, if it knows of one.
-handleClientRequest :: ClientReqHandler 'Follower sm v
-handleClientRequest (NodeFollowerState fs) (ClientRequest clientId _)= do
+handleClientReadRequest :: ClientReqHandler 'Follower ClientReadReq sm v
+handleClientReadRequest = handleClientRequest
+
+-- | When a client handles a client request, it redirects the client to the
+-- current leader by responding with the current leader id, if it knows of one.
+handleClientWriteRequest :: ClientReqHandler 'Follower (ClientWriteReq v) sm v
+handleClientWriteRequest = handleClientRequest
+
+-- | When a client handles a client request, it redirects the client to the
+-- current leader by responding with the current leader id, if it knows of one.
+handleClientRequest :: ClientReqHandler 'Follower cr sm v
+handleClientRequest (NodeFollowerState fs) clientId _ = do
   redirectClientToLeader clientId (fsCurrentLeader fs)
   pure (followerResultState Noop fs)

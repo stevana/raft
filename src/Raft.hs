@@ -283,10 +283,11 @@ handleEventLoop initStateMachine = do
       mRes <-
         withValidatedEvent stateMachine $ \event -> do
           loadLogEntryTermAtAePrevLogIndex event
-          raftNodeState <- get
+          raftNodeState@(RaftNodeState nodeState) <- get
 
-          -- Set the RaftNodeStateLabel metric
-          Metrics.setRaftNodeStateLabel (nodeMode raftNodeState)
+          -- Record the current node state as a metric
+          Metrics.setNodeStateLabel (nodeMode raftNodeState)
+          Metrics.setCommitIndexGauge (getCommitIndex nodeState)
 
           logDebug $ "[Event]: " <> show event
           logDebug $ "[NodeState]: " <> show raftNodeState
@@ -403,7 +404,11 @@ handleAction action = do
       eRes <- lift (updateLog entries)
       case eRes of
         Left err -> logAndPanic (show err)
-        Right _ -> do
+        Right midx -> do
+          -- Update the last log entry index metrics
+          case midx of
+            Nothing -> pure ()
+            Just idx -> Metrics.setLastLogIndexGauge idx
           -- Update the last log entry data
           modify $ \(RaftNodeState ns) ->
             RaftNodeState (setLastLogEntry ns entries)

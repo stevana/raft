@@ -224,6 +224,16 @@ getLastLogEntry nodeState =
     NodeCandidateState cs -> csLastLogEntry cs
     NodeLeaderState ls -> lsLastLogEntry ls
 
+getLastLogEntryIndex :: NodeState ns v -> Index
+getLastLogEntryIndex = lastLogEntryIndex . getLastLogEntry
+
+getCommitIndex :: NodeState ns v -> Index
+getCommitIndex nodeState =
+  case nodeState of
+    NodeFollowerState fs -> fsCommitIndex fs
+    NodeCandidateState cs -> csCommitIndex cs
+    NodeLeaderState ls -> lsCommitIndex ls
+
 -- | Get the index of highest log entry applied to state machine and the index
 -- of highest log entry known to be committed
 getLastAppliedAndCommitIndex :: NodeState ns v -> (Index, Index)

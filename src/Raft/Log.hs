@@ -22,6 +22,7 @@ module Raft.Log (
 
   Entry(..),
   Entries,
+  lastEntryIndex,
 
   RaftInitLog(..),
   ReadEntriesSpec(..),
@@ -91,6 +92,12 @@ data Entry v = Entry
   } deriving (Show, Eq, Generic, Serialize)
 
 type Entries v = Seq (Entry v)
+
+lastEntryIndex :: Entries v -> Maybe Index
+lastEntryIndex entries =
+  case entries of
+    Empty -> Nothing
+    _ :|> e -> Just (entryIndex e)
 
 data InvalidLog
   = InvalidIndex { expectedIndex :: Index, actualIndex :: Index }
@@ -226,15 +233,20 @@ updateLog
      , RaftWriteLog m v, Exception (RaftWriteLogError m)
      )
   => Entries v
-  -> m (Either (RaftLogError m) ())
+  -> m (Either (RaftLogError m) (Maybe Index))
 updateLog entries =
   case entries of
-    Empty -> pure (Right ())
+    Empty -> pure (Right Nothing)
     e :<| _ -> do
       eDel <- deleteLogEntriesFrom @m @v (entryIndex e)
       case eDel of
         Left err -> pure (Left (RaftLogDeleteError err))
-        Right DeleteSuccess -> first RaftLogWriteError <$> writeLogEntries entries
+        Right DeleteSuccess -> do
+          eRes <- first RaftLogWriteError <$> writeLogEntries entries
+          case eRes of
+            Left err -> pure (Left err)
+            Right () -> pure (Right (lastEntryIndex entries))
+
 
 --------------------------------------------------------------------------------
 -- Reading entries by <X>

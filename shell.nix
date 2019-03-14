@@ -3,7 +3,7 @@ let
 in
 { system ? builtins.currentSystem
 , config ? {}
-, compiler ? "ghc864"
+, compiler ? "ghc863"
 , doBenchmark ? false
 , pkgs ? (import (localLib.fetchNixPkgs) { inherit system config; })
 }:

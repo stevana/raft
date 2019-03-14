@@ -27,7 +27,7 @@ import Raft.RPC
 import Raft.Client
 import Raft.Event
 import Raft.Persistent
-import Raft.Log (entryIndex)
+import Raft.Log
 import Raft.Transition
 import Raft.Types
 

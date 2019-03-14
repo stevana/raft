@@ -32,7 +32,7 @@ import Raft.Action
 import Raft.Client
 import Raft.Event
 import Raft.Persistent
-import Raft.Log (Entry(..), EntryIssuer(..), EntryValue(..))
+import Raft.Log
 import Raft.Transition
 import Raft.Types
 

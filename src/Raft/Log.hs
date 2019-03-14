@@ -16,13 +16,20 @@ module Raft.Log (
   EntryIssuer(..),
   EntryValue(..),
 
-  EntryHash,
+  EntryHash(..),
   genesisHash,
   hashEntry,
 
   Entry(..),
   Entries,
   lastEntryIndex,
+
+  LastLogEntry(..),
+  hashLastLogEntry,
+  lastLogEntryIndex,
+  lastLogEntryIssuer,
+  lastLogEntryTerm,
+  lastLogEntryIndexAndTerm,
 
   RaftInitLog(..),
   ReadEntriesSpec(..),
@@ -69,8 +76,8 @@ data EntryValue v
   | NoValue -- ^ Used as a first committed entry of a new term
   deriving (Show, Eq, Generic, Serialize)
 
-newtype EntryHash = EntryHash ByteString
-  deriving (Show, Eq, Ord, Generic, Serialize)
+newtype EntryHash = EntryHash { unEntryHash :: ByteString }
+  deriving (Show, Read, Eq, Ord, Generic, Serialize)
 
 genesisHash :: EntryHash
 genesisHash = EntryHash $ BS16.encode $ BS.replicate 32 0
@@ -98,6 +105,35 @@ lastEntryIndex entries =
   case entries of
     Empty -> Nothing
     _ :|> e -> Just (entryIndex e)
+
+-- | The datatype representing a node's last log entry
+data LastLogEntry v
+  = LastLogEntry (Entry v)
+  | NoLogEntries
+  deriving (Show)
+
+hashLastLogEntry :: Serialize v => LastLogEntry v -> EntryHash
+hashLastLogEntry = \case
+  LastLogEntry e -> hashEntry e
+  NoLogEntries -> genesisHash
+
+lastLogEntryIndex :: LastLogEntry v -> Index
+lastLogEntryIndex = \case
+  LastLogEntry e -> entryIndex e
+  NoLogEntries -> index0
+
+lastLogEntryTerm :: LastLogEntry v -> Term
+lastLogEntryTerm = \case
+  LastLogEntry e -> entryTerm e
+  NoLogEntries -> term0
+
+lastLogEntryIndexAndTerm :: LastLogEntry v -> (Index, Term)
+lastLogEntryIndexAndTerm lle = (lastLogEntryIndex lle, lastLogEntryTerm lle)
+
+lastLogEntryIssuer :: LastLogEntry v -> Maybe EntryIssuer
+lastLogEntryIssuer = \case
+  LastLogEntry e -> Just (entryIssuer e)
+  NoLogEntries -> Nothing
 
 data InvalidLog
   = InvalidIndex { expectedIndex :: Index, actualIndex :: Index }

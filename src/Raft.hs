@@ -408,7 +408,7 @@ handleAction action = do
           -- Update the last log entry index metrics
           case midx of
             Nothing -> pure ()
-            Just idx -> Metrics.setLastLogIndexGauge idx
+            Just idx -> Metrics.setLastLogEntryIndexGauge idx
           -- Update the last log entry data
           modify $ \(RaftNodeState ns) ->
             RaftNodeState (setLastLogEntry ns entries)

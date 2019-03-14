@@ -10,7 +10,6 @@ module Raft.NodeState where
 
 import Protolude
 
-import qualified Data.Serialize as S
 import Data.Sequence (Seq(..))
 
 import Raft.Client
@@ -102,34 +101,6 @@ data NodeState (a :: Mode) v where
   NodeLeaderState :: LeaderState v -> NodeState 'Leader v
 
 deriving instance Show v => Show (NodeState s v)
-
-data LastLogEntry v
-  = LastLogEntry (Entry v)
-  | NoLogEntries
-  deriving (Show)
-
-hashLastLogEntry :: S.Serialize v => LastLogEntry v -> EntryHash
-hashLastLogEntry = \case
-  LastLogEntry e -> hashEntry e
-  NoLogEntries -> genesisHash
-
-lastLogEntryIndex :: LastLogEntry v -> Index
-lastLogEntryIndex = \case
-  LastLogEntry e -> entryIndex e
-  NoLogEntries -> index0
-
-lastLogEntryTerm :: LastLogEntry v -> Term
-lastLogEntryTerm = \case
-  LastLogEntry e -> entryTerm e
-  NoLogEntries -> term0
-
-lastLogEntryIndexAndTerm :: LastLogEntry v -> (Index, Term)
-lastLogEntryIndexAndTerm lle = (lastLogEntryIndex lle, lastLogEntryTerm lle)
-
-lastLogEntryIssuer :: LastLogEntry v -> Maybe EntryIssuer
-lastLogEntryIssuer = \case
-  LastLogEntry e -> Just (entryIssuer e)
-  NoLogEntries -> Nothing
 
 data FollowerState v = FollowerState
   { fsCurrentLeader :: CurrentLeader

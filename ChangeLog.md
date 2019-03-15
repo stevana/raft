@@ -27,6 +27,9 @@
   `preprocessCmd` for applications that need the leader to manipulate the
   command before it is made into a log entry and applied to the state machine.
 
+- Tests: Factor out common test functionality and reorganize test files.
+- Tests: Added more comprehensive concurrency tests.
+
 - Bug Fix: When running networks of size 2, 'incrCommitIndex' will no longer run
   in an infinite loop when incrementing the leader's commit to the correct N. 
 - Bug Fix: When an invalid client request is submitted, the leader appropriately

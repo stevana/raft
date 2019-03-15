@@ -293,7 +293,6 @@ handleEventLoop initStateMachine = do
           logDebug $ "[NodeState]: " <> show raftNodeState
           logDebug $ "[State Machine]: " <> show stateMachine
           logDebug $ "[Persistent State]: " <> show persistentState
-
           -- Perform core state machine transition, handling the current event
           nodeConfig <- asks raftNodeConfig
           raftNodeMetrics <- Metrics.getRaftNodeMetrics
@@ -384,17 +383,17 @@ handleAction action = do
   logDebug $ "Handling [Action]: " <> show action
   case action of
     SendRPC nid sendRpcAction -> do
-      void . raftFork (CustomThreadRole "Send RPC") $ do
-        rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
-        lift (sendRPC nid rpcMsg)
+      rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
+      sendRPCThread nid rpcMsg
     SendRPCs rpcMap ->
-      flip mapM_ (Map.toList rpcMap) $ \(nid, sendRpcAction) ->
-        raftFork (CustomThreadRole "Send RPC") $ do
-          rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
-          lift (sendRPC nid rpcMsg)
+      forM_ (Map.toList rpcMap) $ \(nid, sendRpcAction) -> do
+        rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
+        sendRPCThread nid rpcMsg
     BroadcastRPC nids sendRpcAction -> do
       rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
-      mapM_ (raftFork (CustomThreadRole "RPC Broadcast Thread") . lift . flip sendRPC rpcMsg) nids
+      let sendRPC' = lift . flip sendRPC rpcMsg
+      forM_ nids $ \nid ->
+        raftFork (CustomThreadRole "RPC Broadcast") (sendRPC' nid)
     RespondToClient cid cr -> respondToClient cid cr
     ResetTimeoutTimer tout -> do
       case tout of
@@ -428,6 +427,9 @@ handleAction action = do
                   ls { lsClientReqCache = creqMap `Map.union` lsClientReqCache }
         _ -> logAndPanic "Only the leader should update the client request cache..."
   where
+    sendRPCThread :: NodeId -> RPCMessage v -> RaftT v m ()
+    sendRPCThread nid rpcMsg =
+      void (raftFork (CustomThreadRole "Send RPC") (lift (sendRPC nid rpcMsg)))
     respondToClientWrite :: (ClientId, (SerialNum, Index)) -> RaftT v m ()
     respondToClientWrite (cid, (sn,idx)) = do
       let clientWriteRespSpec =

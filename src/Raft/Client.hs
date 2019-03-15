@@ -552,7 +552,7 @@ clientRecvRead = do
   eRes <- clientRecv
   case eRes of
     Left err -> pure (Left (RaftClientRecvError err))
-    Right cresp ->
+    Right cresp -> do
       case cresp of
         ClientRedirectResponse crr -> pure (Left (RaftClientUnexpectedRedirect crr))
         ClientWriteResponse cwr -> pure (Left (RaftClientUnexpectedWriteResp cwr))

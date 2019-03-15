@@ -13,293 +13,34 @@
 module TestDejaFu where
 
 import Protolude hiding
-  (STM, TChan, newTChan, readMVar, readTChan, writeTChan, atomically, killThread, ThreadId)
+  (STM, TChan, TVar, newTChan, readMVar, readTChan, writeTChan, atomically, killThread, ThreadId)
 
-import Data.Sequence (Seq(..), (><), dropWhileR, (!?))
 import qualified Data.Map as Map
+import qualified Data.Sequence as Seq
 import qualified Data.Maybe as Maybe
-import qualified Data.Serialize as S
-import Numeric.Natural
+import Test.QuickCheck
 
-import Control.Monad.Fail
-import Control.Monad.Catch
-import Control.Monad.Conc.Class
-import Control.Concurrent.Classy.STM.TChan
 
 import Test.DejaFu hiding (get, ThreadId)
 import Test.DejaFu.Internal (Settings(..))
 import Test.DejaFu.Conc hiding (ThreadId)
 import Test.Tasty
+import Test.Tasty.HUnit
 import Test.Tasty.DejaFu hiding (get)
 
 import System.Random (mkStdGen, newStdGen)
-
+import Data.List
 import TestUtils
+import RaftTestT
+import qualified SampleEntries
 
 import Raft
-import Raft.Client
-import Raft.Log
-import Raft.Monad
 
-import Data.Time.Clock.System (getSystemTime)
-
---------------------------------------------------------------------------------
--- Test State Machine & Commands
---------------------------------------------------------------------------------
-
-type Var = ByteString
-
-data StoreCmd
-  = Set Var Natural
-  | Incr Var
-  deriving (Show, Generic)
-
-instance S.Serialize StoreCmd
-
-type Store = Map Var Natural
-
-data StoreCtx = StoreCtx
-
-instance RaftStateMachinePure Store StoreCmd where
-  data RaftStateMachinePureError Store StoreCmd = StoreError Text deriving (Show)
-  type RaftStateMachinePureCtx Store StoreCmd = StoreCtx
-  rsmTransition _ store cmd =
-    Right $ case cmd of
-      Set x n -> Map.insert x n store
-      Incr x -> Map.adjust succ x store
-
-instance RaftStateMachine RaftTestM Store StoreCmd where
-  validateCmd _ = pure (Right ())
-  askRaftStateMachinePureCtx = pure StoreCtx
-
-type TestEventChan = RaftEventChan StoreCmd RaftTestM
-type TestEventChans = Map NodeId TestEventChan
-
-type TestClientRespChan = TChan (STM ConcIO) (ClientResponse Store StoreCmd)
-type TestClientRespChans = Map ClientId TestClientRespChan
-
--- | Node specific environment
-data TestNodeEnv = TestNodeEnv
-  { testNodeEventChans :: TestEventChans
-  , testClientRespChans :: TestClientRespChans
-  , testRaftNodeConfig :: RaftNodeConfig
-  }
-
--- | Node specific state
-data TestNodeState = TestNodeState
-  { testNodeLog :: Entries StoreCmd
-  , testNodePersistentState :: PersistentState
-  }
-
--- | A map of node ids to their respective node data
-type TestNodeStates = Map NodeId TestNodeState
-
-newtype RaftTestM a = RaftTestM {
-    unRaftTestM :: ReaderT TestNodeEnv (StateT TestNodeStates ConcIO) a
-  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestNodeStates, MonadFail)
-
-deriving instance MonadThrow RaftTestM
-deriving instance MonadCatch RaftTestM
-deriving instance MonadMask RaftTestM
-deriving instance MonadConc RaftTestM
-
-runRaftTestM :: TestNodeEnv -> TestNodeStates -> RaftTestM a -> ConcIO a
-runRaftTestM testEnv testState =
-  flip evalStateT testState . flip runReaderT testEnv . unRaftTestM
-
-newtype RaftTestError = RaftTestError Text
-  deriving (Show)
-
-instance Exception RaftTestError
-throwTestErr = throw . RaftTestError
-
-askSelfNodeId :: RaftTestM NodeId
-askSelfNodeId = asks (raftConfigNodeId . testRaftNodeConfig)
-
-lookupNodeEventChan :: NodeId -> RaftTestM TestEventChan
-lookupNodeEventChan nid = do
-  testChanMap <- asks testNodeEventChans
-  case Map.lookup nid testChanMap of
-    Nothing -> throwTestErr $ "Node id " <> show nid <> " does not exist in TestEnv"
-    Just testChan -> pure testChan
-
-getNodeState :: NodeId -> RaftTestM TestNodeState
-getNodeState nid = do
-  testState <- get
-  case Map.lookup nid testState of
-    Nothing -> throwTestErr $ "Node id " <> show nid <> " does not exist in TestNodeStates"
-    Just testNodeState -> pure testNodeState
-
-modifyNodeState :: NodeId -> (TestNodeState -> TestNodeState) -> RaftTestM ()
-modifyNodeState nid f =
-  modify $ \testState ->
-    case Map.lookup nid testState of
-      Nothing -> panic $ "Node id " <> show nid <> " does not exist in TestNodeStates"
-      Just testNodeState -> Map.insert nid (f testNodeState) testState
-
-instance RaftPersist RaftTestM where
-  type RaftPersistError RaftTestM = RaftTestError
-  initializePersistentState = pure (Right ())
-  writePersistentState pstate' = do
-    nid <- askSelfNodeId
-    fmap Right $ modify $ \testState ->
-      case Map.lookup nid testState of
-        Nothing -> testState
-        Just testNodeState -> do
-          let newTestNodeState = testNodeState { testNodePersistentState = pstate' }
-          Map.insert nid newTestNodeState testState
-  readPersistentState = do
-    nid <- askSelfNodeId
-    testState <- get
-    case Map.lookup nid testState of
-      Nothing -> pure $ Left (RaftTestError "Failed to find node in environment")
-      Just testNodeState -> pure $ Right (testNodePersistentState testNodeState)
-
-instance RaftSendRPC RaftTestM StoreCmd where
-  sendRPC nid rpc = do
-    eventChan <- lookupNodeEventChan nid
-    atomically $ writeTChan eventChan (MessageEvent (RPCMessageEvent rpc))
-
-instance RaftSendClient RaftTestM Store StoreCmd where
-  sendClient cid cr = do
-    clientRespChans <- asks testClientRespChans
-    case Map.lookup cid clientRespChans of
-      Nothing -> panic "Failed to find client id in environment"
-      Just clientRespChan -> atomically (writeTChan clientRespChan cr)
-
-instance RaftInitLog RaftTestM StoreCmd where
-  type RaftInitLogError RaftTestM = RaftTestError
-  -- No log initialization needs to be done here, everything is in memory.
-  initializeLog _ = pure (Right ())
-
-instance RaftWriteLog RaftTestM StoreCmd where
-  type RaftWriteLogError RaftTestM = RaftTestError
-  writeLogEntries entries = do
-    nid <- askSelfNodeId
-    fmap Right $
-      modifyNodeState nid $ \testNodeState ->
-        let log = testNodeLog testNodeState
-         in testNodeState { testNodeLog = log >< entries }
-
-instance RaftDeleteLog RaftTestM StoreCmd where
-  type RaftDeleteLogError RaftTestM = RaftTestError
-  deleteLogEntriesFrom idx = do
-    nid <- askSelfNodeId
-    fmap (const $ Right DeleteSuccess) $
-      modifyNodeState nid $ \testNodeState ->
-        let log = testNodeLog testNodeState
-            newLog = dropWhileR ((<=) idx . entryIndex) log
-         in testNodeState { testNodeLog = newLog }
-
-instance RaftReadLog RaftTestM StoreCmd where
-  type RaftReadLogError RaftTestM = RaftTestError
-  readLogEntry (Index idx)
-    | idx <= 0 = pure $ Right Nothing
-    | otherwise = do
-        log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
-        case log !? fromIntegral (pred idx) of
-          Nothing -> pure (Right Nothing)
-          Just e
-            | entryIndex e == Index idx -> pure (Right $ Just e)
-            | otherwise -> pure $ Left (RaftTestError "Malformed log")
-  readLastLogEntry = do
-    log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
-    case log of
-      Empty -> pure (Right Nothing)
-      _ :|> lastEntry -> pure (Right (Just lastEntry))
-
-instance MonadRaftChan StoreCmd RaftTestM where
-  type RaftEventChan StoreCmd RaftTestM = TChan (STM ConcIO) (Event StoreCmd)
-  readRaftChan = RaftTestM . lift . lift . readRaftChan
-  writeRaftChan chan = RaftTestM . lift . lift . writeRaftChan chan
-  newRaftChan = RaftTestM . lift . lift $ newRaftChan
-
-instance MonadRaftFork RaftTestM where
-  type RaftThreadId RaftTestM = RaftThreadId ConcIO
-  raftFork r m = do
-    testNodeEnv <- ask
-    testNodeStates <- get
-    RaftTestM . lift . lift $ raftFork r (runRaftTestM testNodeEnv testNodeStates m)
-
---------------------------------------------------------------------------------
-
-data TestClientEnv = TestClientEnv
-  { testClientEnvRespChan :: TestClientRespChan
-  , testClientEnvNodeEventChans :: TestEventChans
-  }
-
-type RaftTestClientM' = ReaderT TestClientEnv ConcIO
-type RaftTestClientM = RaftClientT Store StoreCmd RaftTestClientM'
-
-instance RaftClientSend RaftTestClientM' StoreCmd where
-  type RaftClientSendError RaftTestClientM' StoreCmd = ()
-  raftClientSend nid creq = do
-    Just nodeEventChan <- asks (Map.lookup nid . testClientEnvNodeEventChans)
-    lift $ atomically $ writeTChan nodeEventChan (MessageEvent (ClientRequestEvent creq))
-    pure (Right ())
-
-instance RaftClientRecv RaftTestClientM' Store StoreCmd where
-  type RaftClientRecvError RaftTestClientM' Store = ()
-  raftClientRecv = do
-    clientRespChan <- asks testClientEnvRespChan
-    fmap Right $ lift $ atomically $ readTChan clientRespChan
-
-runRaftTestClientM
-  :: ClientId
-  -> TestClientRespChan
-  -> TestEventChans
-  -> RaftTestClientM a
-  -> ConcIO a
-runRaftTestClientM cid chan chans rtcm = do
-  raftClientState <- initRaftClientState mempty <$> liftIO newStdGen
-  let raftClientEnv = RaftClientEnv cid
-      testClientEnv = TestClientEnv chan chans
-   in flip runReaderT testClientEnv
-    . runRaftClientT raftClientEnv raftClientState { raftClientRaftNodes = Map.keysSet chans }
-    $ rtcm
-
---------------------------------------------------------------------------------
-
-initTestChanMaps :: ConcIO (Map NodeId TestEventChan, Map ClientId TestClientRespChan)
-initTestChanMaps = do
-  eventChans <-
-    Map.fromList . zip (toList nodeIds) <$>
-      atomically (replicateM (length nodeIds) newTChan)
-  clientRespChans <-
-    Map.fromList . zip [client0] <$>
-      atomically (replicateM 1 newTChan)
-  pure (eventChans, clientRespChans)
-
-initRaftTestEnvs
-  :: Map NodeId TestEventChan
-  -> Map ClientId TestClientRespChan
-  -> ([TestNodeEnv], TestNodeStates)
-initRaftTestEnvs eventChans clientRespChans = (testNodeEnvs, testStates)
-  where
-    testNodeEnvs = map (TestNodeEnv eventChans clientRespChans) testConfigs
-    testStates = Map.fromList $ zip (toList nodeIds) $
-      replicate (length nodeIds) (TestNodeState mempty initPersistentState)
-
-runTestNode :: TestNodeEnv -> TestNodeStates -> ConcIO ()
-runTestNode testEnv testState =
-    runRaftTestM testEnv testState $ do
-      raftEnv <- initializeRaftEnv eventChan dummyTimer dummyTimer (testRaftNodeConfig testEnv) NoLogs
-      runRaftT initRaftNodeState raftEnv $
-        handleEventLoop (mempty :: Store)
-  where
-    nid = raftConfigNodeId (testRaftNodeConfig testEnv)
-    Just eventChan = Map.lookup nid (testNodeEventChans testEnv)
-    dummyTimer = pure ()
-
-forkTestNodes :: [TestNodeEnv] -> TestNodeStates -> ConcIO [ThreadId ConcIO]
-forkTestNodes testEnvs testStates =
-  mapM (fork . flip runTestNode testStates) testEnvs
-
---------------------------------------------------------------------------------
+dejaFuSettings = defaultSettings { _way = randomly (mkStdGen 42) 100 }
 
 test_concurrency :: [TestTree]
 test_concurrency =
-    [ testGroup "Leader Election" [ testConcurrentProps (leaderElection node0) mempty ]
+    [ testGroup "Leader Election" [ testConcurrentProps (leaderElectionTest node0) mempty ]
     , testGroup "increment(set('x', 41)) == x := 42"
         [ testConcurrentProps incrValue (Map.fromList [("x", 42)], Index 3) ]
     , testGroup "set('x', 0) ... 10x incr(x) == x := 10"
@@ -313,118 +54,78 @@ test_concurrency =
 
 testConcurrentProps
   :: (Eq a, Show a)
-  => (TestEventChans -> TestClientRespChans -> ConcIO a)
+  => RaftTestClientT ConcIO a
   -> a
   -> TestTree
 testConcurrentProps test expected =
-  testDejafusWithSettings settings
+  testDejafusWithSettings dejaFuSettings
     [ ("No deadlocks", deadlocksNever)
     , ("No Exceptions", exceptionsNever)
     , ("Success", alwaysTrue (== Right expected))
-    ] $ concurrentRaftTest test
-  where
-    settings = defaultSettings
-      { _way = randomly (mkStdGen 42) 100
-      }
+    ] $ fst <$> withRaftTestNodes emptyTestStates test
 
-    concurrentRaftTest :: (TestEventChans -> TestClientRespChans -> ConcIO a) -> ConcIO a
-    concurrentRaftTest runTest =
-        Control.Monad.Catch.bracket setup teardown $
-          uncurry runTest . snd
-      where
-        setup = do
-          (eventChans, clientRespChans) <- initTestChanMaps
-          let (testNodeEnvs, testNodeStates) = initRaftTestEnvs eventChans clientRespChans
-          tids <- forkTestNodes testNodeEnvs testNodeStates
-          pure (tids, (eventChans, clientRespChans))
+leaderElectionTest
+  :: NodeId
+  -> RaftTestClientM Store
+leaderElectionTest nid = leaderElection nid
 
-        teardown = mapM_ killThread . fst
+incrValue :: RaftTestClientM (Store, Index)
+incrValue = do
+  leaderElection node0
+  Right idx <- do
+    syncClientWrite node0 (Set "x" 41)
+    syncClientWrite node0 (Incr "x")
+  Right store <- syncClientRead node0
+  pure (store, idx)
 
-leaderElection :: NodeId -> TestEventChans -> TestClientRespChans -> ConcIO Store
-leaderElection nid eventChans clientRespChans =
-    runRaftTestClientM client0 client0RespChan eventChans $
-      leaderElection' nid eventChans
-  where
-     Just client0RespChan = Map.lookup client0 clientRespChans
-
-leaderElection' :: NodeId -> TestEventChans -> RaftTestClientM Store
-leaderElection' nid eventChans = do
-    sysTime <- liftIO getSystemTime
-    lift $ lift $ atomically $ writeTChan nodeEventChan (TimeoutEvent sysTime ElectionTimeout)
-    pollForReadResponse nid
-  where
-    Just nodeEventChan = Map.lookup nid eventChans
-
-incrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
-incrValue eventChans clientRespChans = do
-    runRaftTestClientM client0 client0RespChan eventChans $ do
-      leaderElection' node0 eventChans
-      Right idx <- do
-        syncClientWrite node0 (Set "x" 41)
-        syncClientWrite node0 (Incr "x")
-      Right store <- syncClientRead node0
-      pure (store, idx)
-  where
-    Just client0RespChan = Map.lookup client0 clientRespChans
-
-multIncrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
-multIncrValue eventChans clientRespChans = do
-  leaderElection node0 eventChans clientRespChans
-  runRaftTestClientM client0 client0RespChan eventChans $ do
+multIncrValue :: RaftTestClientM (Store, Index)
+multIncrValue = do
+    leaderElection node0
     syncClientWrite node0 (Set "x" 0)
     Right idx <-
       fmap (Maybe.fromJust . lastMay) $
         replicateM 10 $ syncClientWrite node0 (Incr "x")
     store <- pollForReadResponse node0
     pure (store, idx)
-  where
-    Just client0RespChan = Map.lookup client0 clientRespChans
 
-leaderRedirect :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
-leaderRedirect eventChans clientRespChans =
-  runRaftTestClientM client0 client0RespChan eventChans $ do
+leaderRedirect :: RaftTestClientM CurrentLeader
+leaderRedirect = do
     Left resp <- syncClientWrite node1 (Set "x" 42)
     pure resp
-  where
-    Just client0RespChan = Map.lookup client0 clientRespChans
 
-followerRedirNoLeader :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
+followerRedirNoLeader :: RaftTestClientM CurrentLeader
 followerRedirNoLeader = leaderRedirect
 
-followerRedirLeader :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
-followerRedirLeader eventChans clientRespChans = do
-    leaderElection node0 eventChans clientRespChans
-    leaderRedirect eventChans clientRespChans
+followerRedirLeader :: RaftTestClientM CurrentLeader
+followerRedirLeader = do
+    leaderElection node0
+    leaderRedirect
 
-newLeaderElection :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
-newLeaderElection eventChans clientRespChans = do
-    runRaftTestClientM client0 client0RespChan eventChans $ do
-      leaderElection' node0 eventChans
-      leaderElection' node1 eventChans
-      leaderElection' node2 eventChans
-      leaderElection' node1 eventChans
-      Left ldr <- syncClientRead node0
-      pure ldr
-  where
-    Just client0RespChan = Map.lookup client0 clientRespChans
+newLeaderElection :: RaftTestClientM CurrentLeader
+newLeaderElection = do
+    leaderElection node0
+    leaderElection node1
+    leaderElection node2
+    leaderElection node1
+    Left ldr <- syncClientRead node0
+    pure ldr
 
-comprehensive :: TestEventChans -> TestClientRespChans -> ConcIO (Index, Store, CurrentLeader)
-comprehensive eventChans clientRespChans =
-  runRaftTestClientM client0 client0RespChan eventChans $ do
-    leaderElection'' node0
+comprehensive :: RaftTestClientT ConcIO (Index, Store, CurrentLeader)
+comprehensive = do
+    leaderElection node0
     Right idx2 <- syncClientWrite node0 (Set "x" 7)
     Right idx3 <- syncClientWrite node0 (Set "y" 3)
     Left (CurrentLeader _) <- syncClientWrite node1 (Incr "y")
     Right _ <- syncClientRead node0
 
-    leaderElection'' node1
+    leaderElection node1
     Right idx5 <- syncClientWrite node1 (Incr "x")
     Right idx6 <- syncClientWrite node1 (Incr "y")
     Right idx7 <- syncClientWrite node1 (Set "z" 40)
     Left (CurrentLeader _) <- syncClientWrite node2 (Incr "y")
     Right _ <- syncClientRead node1
 
-    leaderElection'' node2
+    leaderElection node2
     Right idx9 <- syncClientWrite node2 (Incr "z")
     Right idx10 <- syncClientWrite node2 (Incr "x")
     Left _ <- syncClientWrite node1 (Set "q" 100)
@@ -434,7 +135,7 @@ comprehensive eventChans clientRespChans =
     Left (CurrentLeader _) <- syncClientWrite node0 (Incr "y")
     Right _ <- syncClientRead node2
 
-    leaderElection'' node0
+    leaderElection node0
     Right idx14 <- syncClientWrite node0 (Incr "z")
     Left (CurrentLeader _) <- syncClientWrite node1 (Incr "y")
 
@@ -442,60 +143,64 @@ comprehensive eventChans clientRespChans =
     Left ldr <- syncClientRead node1
 
     pure (idx14, store, ldr)
+
+
+-- | Check if the majority of the node states are equal after running the given RaftTestClientM
+-- program
+-- TODO hardcoded to running with 3 nodes
+majorityNodeStatesEqual :: RaftTestClientM a -> TestNodeStatesConfig -> TestTree
+majorityNodeStatesEqual clientTest startingStatesConfig  =
+  testDejafusWithSettings dejaFuSettings
+    [ ("No deadlocks", deadlocksNever)
+    , ("No exceptions", exceptionsNever)
+    -- | the test below is commented out as we don't have a good way of
+    -- waiting for the majority nodes to catchup to the same state as the leader
+    --, ("Correct", alwaysTrue correctResult)
+    ] runTest
   where
-    leaderElection'' nid = leaderElection' nid eventChans
-    Just client0RespChan = Map.lookup client0 clientRespChans
+    runTest :: ConcIO TestNodeStates
+    runTest = do
+      let startingNodeStates = initTestStates startingStatesConfig
+      (res, endingNodeStates) <-
+        withRaftTestNodes startingNodeStates $ do
+          leaderElection node0
+          clientTest
+      pure endingNodeStates
 
---------------------------------------------------------------------------------
--- Helpers
---------------------------------------------------------------------------------
+correctResult :: Either Condition TestNodeStates -> Bool
+correctResult (Right testStates) =
+  let (inAgreement, inDisagreement) = partition
+        (== testNodeLog (testStates Map.! node0))
+        (fmap testNodeLog $ Map.elems testStates)
+  in  (length inAgreement) > length inDisagreement
+correctResult (Left _) = False
 
--- | This function can be safely "run" without worry about impacting the client
--- SerialNum of the client requests.
---
--- Warning: If read requests start to include serial numbers, this function will
--- no longer be safe to `runRaftTestClientM` on.
-pollForReadResponse :: NodeId -> RaftTestClientM Store
-pollForReadResponse nid = do
-  eRes <- clientReadFrom nid ClientReadStateMachine
-  case eRes of
-    -- TODO Handle other cases of 'ClientReadResp'
-    Right (ClientReadRespStateMachine res) -> pure res
-    _ -> do
-      liftIO $ Control.Monad.Conc.Class.threadDelay 10000
-      pollForReadResponse nid
+test_AEFollower :: TestTree
+test_AEFollower =
+  testGroup "AEFollower"
+    [ majorityNodeStatesEqual (syncClientWrite node0 (Set "x" 7))
+      [ (node0, Term 4, SampleEntries.entries)
+      , (node1, Term 4, Seq.take 11 SampleEntries.entries)
+      , (node2, Term 4, Seq.take 11 SampleEntries.entries)
+      ]
+    ]
 
-syncClientRead :: NodeId -> RaftTestClientM (Either CurrentLeader Store)
-syncClientRead nid = do
-  eRes <- clientReadFrom nid ClientReadStateMachine
-  case eRes of
-    -- TODO Handle other cases of 'ClientReadResp'
-    Right (ClientReadRespStateMachine store) -> pure $ Right store
-    Left (RaftClientUnexpectedRedirect (ClientRedirResp ldr)) -> pure $ Left ldr
-    _ -> panic "Failed to recieve valid read response"
+test_AEFollowerBehindOneTerm :: TestTree
+test_AEFollowerBehindOneTerm =
+  testGroup "AEFollowerBehindOneTerm"
+    [ majorityNodeStatesEqual (pure ())
+      [ (node0, Term 4, SampleEntries.entries)
+      , (node1, Term 3, Seq.take 9 SampleEntries.entries)
+      , (node2, Term 3, Seq.take 9 SampleEntries.entries)
+      ]
+    ]
 
-syncClientWrite
-  :: NodeId
-  -> StoreCmd
-  -> RaftTestClientM (Either CurrentLeader Index)
-syncClientWrite nid cmd = do
-  eRes <- clientWriteTo nid cmd
-  case eRes of
-    Right (ClientWriteRespSuccess idx sn) -> do
-      Just nodeEventChan <- lift (asks (Map.lookup nid . testClientEnvNodeEventChans))
-      pure $ Right idx
-    Left (RaftClientUnexpectedRedirect (ClientRedirResp ldr)) -> pure $ Left ldr
-    _ -> panic "Failed to receive client write response..."
-
-heartbeat :: TestEventChan -> ConcIO ()
-heartbeat eventChan = do
-  sysTime <- liftIO getSystemTime
-  atomically $ writeTChan eventChan (TimeoutEvent sysTime HeartbeatTimeout)
-
-clientReadReq :: ClientId -> Event StoreCmd
-clientReadReq cid = MessageEvent $ ClientRequestEvent $ ClientRequest cid (ClientReadReq ClientReadStateMachine)
-
-clientReadRespChan :: RaftTestClientM (ClientResponse Store StoreCmd)
-clientReadRespChan = do
-  clientRespChan <- lift (asks testClientEnvRespChan)
-  lift $ lift $ atomically $ readTChan clientRespChan
+test_AEFollowerBehindMultipleTerms :: TestTree
+test_AEFollowerBehindMultipleTerms =
+  testGroup "AEFollowerBehindMultipleTerms"
+    [ majorityNodeStatesEqual (pure ())
+      [ (node0, Term 4, SampleEntries.entries)
+      , (node1, Term 2, Seq.take 6 SampleEntries.entries)
+      , (node2, Term 2, Seq.take 6 SampleEntries.entries)
+      ]
+    ]

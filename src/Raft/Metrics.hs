@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 
 module Raft.Metrics
-( RaftNodeMetrics
+( RaftNodeMetrics(..)
 , defaultRaftNodeMetrics
 , getMetricsStore
 , getRaftNodeMetrics

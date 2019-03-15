@@ -466,6 +466,8 @@ handleAction action = do
                 pure (ClientWriteRespFail sn err)
         ClientRedirRespSpec cl ->
           pure (ClientRedirectResponse (ClientRedirResp cl))
+        ClientMetricsRespSpec rnm ->
+          pure (ClientMetricsResponse (ClientMetricsResp rnm))
 
     mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
     mkRPCfromSendRPCAction sendRPCAction = do

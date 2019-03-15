@@ -1,11 +1,18 @@
 # Changelog for raft
 
-## 0.4.2.0 (Pending)
+## 0.5.0.0
 
 - Feature: Client write requests are now validated by the leader before being
   written to its log using the functions from the `RaftStateMachine` and
   `RaftStateMachinePure` typeclasses; Followers do not re-validate the log
   entry when they receive the entry from the leader.
+- Feature: Add `nix-build` and `nix-shell` support for use with the nix package
+  manager.
+
+- API change: Added a client request to query a raft node's metrics.
+- API change: Added `preprocessCmd` function to the `RaftStateMachine`
+  typeclass for implementations where the leader should add data to state
+  machine commands before creating the log entry.
 - API change: The `clientSendX` family of functions now take a `ClientReq`
   value as an argument instead of a fully formed `ClientRequest` value, such
   that the known `ClientId` is used to construct the `ClientRequest` value
@@ -19,10 +26,15 @@
 - API change: The `RaftStateMachine` typeclass now has a function
   `preprocessCmd` for applications that need the leader to manipulate the
   command before it is made into a log entry and applied to the state machine.
+
 - Bug Fix: When running networks of size 2, 'incrCommitIndex' will no longer run
   in an infinite loop when incrementing the leader's commit to the correct N. 
 - Bug Fix: When an invalid client request is submitted, the leader appropriately
   responds with a failure response and handles the next event as expected.
+- Bug Fix: Correctly construct the Append Entries RPC data when handling a
+  client read request as the leader.
+- Bug Fix: Candidates now transition to followers if the term in an Append
+  Entries RPC is >= to their current term.
 
 ## 0.4.1.0
 

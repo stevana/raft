@@ -29,6 +29,8 @@ data ReplCmd
   = CmdAddNode NodeId
   -- | Return the node ids that the client is aware of
   | CmdGetNodes
+  -- | Read node metrics
+  | CmdReadMetrics NodeId
   -- | Read leader state
   | CmdReadState
   -- | Read specific Entries
@@ -49,6 +51,8 @@ replCmdParser = subparser $ mconcat
         progDesc "Return the node ids that the client is aware of"
     , command "readState" $ info (pure CmdReadState) $
         progDesc "Read leader state"
+    , command "readMetrics" $ info (CmdReadMetrics <$> strArgument (metavar "HOST")) $
+        progDesc "Read node metrics"
     , command "read" $ info (CmdRead <$> indexParser) $
         progDesc "Read specific entry"
     , command "readInterval" $ info (CmdReadInterval <$> indexParser <*> indexParser) $
@@ -88,6 +92,7 @@ handleConsoleCmd input = do
     Success cmd -> case cmd of
       CmdAddNode nid -> liftRSCM $ clientAddNode (toS nid)
       CmdGetNodes -> print =<< liftRSCM clientGetNodes
+      CmdReadMetrics nid -> print =<< liftRSCM (clientQueryNodeMetrics nid)
       CmdReadState -> ifNodesAdded nids $
         handleResponse =<< liftRSCM (RS.socketClientRead ClientReadStateMachine)
       CmdRead n ->
@@ -142,6 +147,7 @@ completer n = do
         , "getNodes"
         , "incr <var>"
         , "set <var> <val>"
+        , "readMetrics"
         , "readState"
         , "read <idx>"
         , "readInterval <low> <high>"

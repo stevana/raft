@@ -42,6 +42,7 @@ module Raft.Client
 , ClientReadResp(..)
 , ClientWriteResp(..)
 , ClientRedirResp(..)
+, ClientMetricsResp(..)
 
 
 -- ** Client Interface
@@ -64,8 +65,12 @@ module Raft.Client
 , clientWriteTo
 , clientWriteTimeout
 
+, clientQueryNodeMetrics
+, clientQueryNodeMetricsTimeout
+
 , clientSendRead
 , clientSendWrite
+, clientSendMetricsReqTo
 , clientSend
 , clientRecv
 
@@ -315,6 +320,7 @@ data RaftClientError s v m where
   RaftClientTimeout    :: Text -> RaftClientError s v m
   RaftClientUnexpectedReadResp  :: ClientReadResp s v -> RaftClientError s v m
   RaftClientUnexpectedWriteResp :: ClientWriteResp s v -> RaftClientError s v m
+  RaftClientUnexpectedMetricsResp :: ClientMetricsResp -> RaftClientError s v m
   RaftClientUnexpectedRedirect  :: ClientRedirResp -> RaftClientError s v m
 
 deriving instance (Show s, Show v, Show (RaftClientSendError m v), Show (RaftClientRecvError m s), Show (RaftStateMachinePureError s v)) => Show (RaftClientError s v m)
@@ -381,6 +387,24 @@ clientWriteTimeout
   -> v
   -> RaftClientT s v m (Either (RaftClientError s v m) (ClientWriteResp s v))
 clientWriteTimeout t cmd = clientTimeout "clientWrite" t (clientWrite cmd)
+
+clientQueryNodeMetrics
+  :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s v)
+  => NodeId
+  -> RaftClientT s v m (Either (RaftClientError s v m) ClientMetricsResp)
+clientQueryNodeMetrics nid = do
+  eQueryMetrics <- clientSendMetricsReqTo nid
+  case eQueryMetrics of
+    Left err -> pure (Left (RaftClientSendError err))
+    Right () -> clientRecvMetrics
+
+clientQueryNodeMetricsTimeout
+  :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s v)
+  => Int
+  -> NodeId
+  -> RaftClientT s v m (Either (RaftClientError s v m) ClientMetricsResp)
+clientQueryNodeMetricsTimeout t nid =
+  clientTimeout "clientQueryNodeMetrics" t (clientQueryNodeMetrics nid)
 
 clientTimeout
   :: (MonadBaseControl IO m, RaftClientSend m v, RaftClientRecv m s v)
@@ -450,6 +474,13 @@ clientSendWriteTo nid v =
   gets raftClientSerialNum >>= \sn ->
     clientSendTo nid (ClientWriteReq (ClientCmdReq sn v))
 
+clientSendMetricsReqTo
+  :: RaftClientSend m v
+  => NodeId
+  -> RaftClientT s v m (Either (RaftClientSendError m v) ())
+clientSendMetricsReqTo nid =
+  clientSendTo nid (ClientMetricsReq ClientAllMetricsReq)
+
 -- | Send a request to the current leader. Nonblocking.
 clientSend
   :: (RaftClientSend m v)
@@ -496,7 +527,7 @@ clientSendRandom creq = do
 
 --------------------------------------------------------------------------------
 
--- | Waits for a write response on the client socket
+-- | Waits for a write response from the leader
 -- Warning: This function discards unexpected read and redirect responses
 clientRecvWrite
   :: (RaftClientSend m v, RaftClientRecv m s v)
@@ -509,9 +540,10 @@ clientRecvWrite = do
       case cresp of
         ClientRedirectResponse crr -> pure (Left (RaftClientUnexpectedRedirect crr))
         ClientReadResponse crr -> pure (Left (RaftClientUnexpectedReadResp crr))
+        ClientMetricsResponse cmr -> pure (Left (RaftClientUnexpectedMetricsResp cmr))
         ClientWriteResponse cwr -> pure (Right cwr)
 
--- | Waits for a read response on the client socket
+-- | Waits for a read response from the leader
 -- Warning: This function discards unexpected write and redirect responses
 clientRecvRead
   :: (RaftClientSend m v, RaftClientRecv m s v)
@@ -524,7 +556,23 @@ clientRecvRead = do
       case cresp of
         ClientRedirectResponse crr -> pure (Left (RaftClientUnexpectedRedirect crr))
         ClientWriteResponse cwr -> pure (Left (RaftClientUnexpectedWriteResp cwr))
+        ClientMetricsResponse cmr -> pure (Left (RaftClientUnexpectedMetricsResp cmr))
         ClientReadResponse crr -> pure (Right crr)
+
+-- | Waits for a metrics response on the client
+clientRecvMetrics
+  :: (RaftClientSend m v, RaftClientRecv m s v)
+  => RaftClientT s v m (Either (RaftClientError s v m) ClientMetricsResp)
+clientRecvMetrics = do
+  eRes <- clientRecv
+  case eRes of
+    Left err -> pure (Left (RaftClientRecvError err))
+    Right cresp ->
+      case cresp of
+        ClientRedirectResponse crr -> pure (Left (RaftClientUnexpectedRedirect crr))
+        ClientWriteResponse cwr -> pure (Left (RaftClientUnexpectedWriteResp cwr))
+        ClientReadResponse crr -> pure (Left (RaftClientUnexpectedReadResp crr))
+        ClientMetricsResponse cmr -> pure (Right cmr)
 
 -- | Wait for a response from the current leader.
 -- This function handles leader changes and write request serial numbers.

@@ -71,6 +71,8 @@ instance Monad m => RaftStateMachine (RaftTestT m) Store StoreCmd where
 type TestEventChan m = TChan (STM m) (Event StoreCmd)
 type TestEventChans m = Map NodeId (TestEventChan m)
 
+type TestRPCMsgEventsSent = [(NodeId, RPCMessage StoreCmd)]
+
 type TestClientRespChan m = TChan (STM m) (ClientResponse Store StoreCmd)
 type TestClientRespChans m = Map ClientId (TestClientRespChan m)
 
@@ -89,6 +91,7 @@ data TestNodeEnv m = TestNodeEnv
   { testNodeEventChans :: TestEventChans m
   , testClientRespChans :: TestClientRespChans m
   , testNodeStates :: TVar (STM m) TestNodeStates
+  , testRPCMsgEventsSent :: TVar (STM m) TestRPCMsgEventsSent
   , testRaftNodeConfig :: RaftNodeConfig
   }
 
@@ -161,6 +164,9 @@ instance MonadConc m => RaftPersist (RaftTestT m) where
 
 instance forall m. MonadConc m => RaftSendRPC (RaftTestT m) StoreCmd where
   sendRPC nid rpc = do
+
+    testRPCMsgEventsSentTVar <- asks testRPCMsgEventsSent
+    atomically $ modifyTVar' testRPCMsgEventsSentTVar $ ((nid, rpc) :)
     eventChan <- lookupNodeEventChan nid
     atomically $ writeTChan eventChan (MessageEvent (RPCMessageEvent rpc))
 
@@ -215,7 +221,7 @@ instance MonadConc m => RaftReadLog (RaftTestT m) StoreCmd where
 instance forall m. (MonadConc m, MonadRaftChan StoreCmd m) => MonadRaftChan StoreCmd (RaftTestT m) where
   type RaftEventChan StoreCmd (RaftTestT m) = TestEventChan m
   readRaftChan = atomically . readTChan
-  writeRaftChan chan ev = do
+  writeRaftChan chan ev =
     atomically $ writeTChan chan ev
   newRaftChan = atomically newTChan
 
@@ -286,9 +292,10 @@ initRaftTestEnvs
   => Map NodeId (TestEventChan m)
   -> Map ClientId (TestClientRespChan m)
   -> TVar (STM m) TestNodeStates
+  -> TVar (STM m) TestRPCMsgEventsSent
   -> [TestNodeEnv m]
-initRaftTestEnvs eventChans clientRespChans testStatesTVar =
-  map (TestNodeEnv eventChans clientRespChans testStatesTVar) testConfigs
+initRaftTestEnvs eventChans clientRespChans testStatesTVar testRPCMsgEventsSentTVar =
+  map (TestNodeEnv eventChans clientRespChans testStatesTVar testRPCMsgEventsSentTVar) testConfigs
 
 runTestNode
   :: ( Typeable m
@@ -401,6 +408,7 @@ leaderElection' nid = do
 --------------------------------------------------------------------------------
 
 type TestNodeStatesConfig =  [(NodeId, Term, Entries StoreCmd)]
+type TestNodesResult = (TestNodeStates, TestRPCMsgEventsSent)
 
 withRaftTestNodes
   :: ( Typeable m
@@ -412,24 +420,26 @@ withRaftTestNodes
      )
   => TestNodeStates
   -> RaftTestClientT m a
-  -> m (a, TestNodeStates)
+  -> m (a, TestNodesResult)
 withRaftTestNodes startingNodeStates raftTest =
   Control.Monad.Catch.bracket setup teardown
-    $ \(tids, (eventChans, clientRespChans, testNodeStatesTVar)) -> do
+    $ \(tids, (eventChans, clientRespChans, testNodeStatesTVar, testRPCMsgEventsSentTVar)) -> do
         let Just client0RespChan = Map.lookup client0 clientRespChans
         res <- runRaftTestClientT client0 client0RespChan eventChans raftTest
 
         testStates <- readTVarConc testNodeStatesTVar
-        pure (res, testStates)
+        testRPCMsgEventsSent <- readTVarConc testRPCMsgEventsSentTVar
+        pure (res, (testStates, testRPCMsgEventsSent))
 
  where
   setup = do
     (eventChans, clientRespChans) <- initTestChanMaps
     testNodeStatesTVar <- atomically $ newTVar startingNodeStates
+    testRPCMsgEventsSentTVar <- atomically $ newTVar []
     let testNodeEnvs =
-          initRaftTestEnvs eventChans clientRespChans testNodeStatesTVar
+          initRaftTestEnvs eventChans clientRespChans testNodeStatesTVar testRPCMsgEventsSentTVar
     tids <- forkTestNodes testNodeEnvs
-    pure (tids, (eventChans, clientRespChans, testNodeStatesTVar))
+    pure (tids, (eventChans, clientRespChans, testNodeStatesTVar, testRPCMsgEventsSentTVar))
   teardown = mapM_ killThread . fst
 
 initTestStates :: TestNodeStatesConfig -> TestNodeStates

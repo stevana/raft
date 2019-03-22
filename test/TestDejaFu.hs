@@ -153,19 +153,24 @@ majorityNodeStatesEqual clientTest startingStatesConfig  =
   testDejafusWithSettings dejaFuSettings
     [ ("No deadlocks", deadlocksNever)
     , ("No exceptions", exceptionsNever)
+    , ("Messages exchanged", alwaysTrue checkMessages)
     -- | the test below is commented out as we don't have a good way of
     -- waiting for the majority nodes to catchup to the same state as the leader
     --, ("Correct", alwaysTrue correctResult)
     ] runTest
   where
-    runTest :: ConcIO TestNodeStates
+    runTest :: ConcIO TestNodesResult
     runTest = do
       let startingNodeStates = initTestStates startingStatesConfig
-      (res, endingNodeStates) <-
+      (res, testNodesResult) <-
         withRaftTestNodes startingNodeStates $ do
           leaderElection node0
           clientTest
-      pure endingNodeStates
+      pure testNodesResult
+
+checkMessages :: Either Condition  TestNodesResult -> Bool
+checkMessages (Right (_, testRPCMsgEventsSent)) = True
+checkMessages (Left _) = True
 
 correctResult :: Either Condition TestNodeStates -> Bool
 correctResult (Right testStates) =

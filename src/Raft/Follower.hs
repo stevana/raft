@@ -41,51 +41,37 @@ import Raft.Types
 -- Note: see 'PersistentState' datatype for discussion about not keeping the
 -- entire log in memory.
 handleAppendEntries :: forall v sm. Show v => RPCHandler 'Follower sm (AppendEntries v) v
-handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
-    PersistentState{..} <- get
-    (success, newFollowerState) <-
-      if aeTerm < currentTerm
-        -- 1. Reply false if term < currentTerm
-        then pure (False, fs)
-        else
-          case fsTermAtAEPrevIndex fs of
-            Nothing
-              | aePrevLogIndex == index0 -> do
-                  appendLogEntries aeEntries
-                  pure (True, updateFollowerState fs)
-              | otherwise -> pure (False, fs)
-            Just entryAtAePrevLogIndexTerm ->
-              -- 2. Reply false if log doesn't contain an entry at
-              -- prevLogIndex whose term matches prevLogTerm.
-              if entryAtAePrevLogIndexTerm /= aePrevLogTerm
-                then pure (False, fs)
-                else do
-                  -- 3. If an existing entry conflicts with a new one (same index
-                  -- but different terms), delete the existing entry and all that
-                  -- follow it.
-                  --   &
-                  -- 4. Append any new entries not already in the log
-                  -- (emits an action that accomplishes 3 & 4
-                  appendLogEntries aeEntries
-                  -- 5. If leaderCommit > commitIndex, set commitIndex =
-                  -- min(leaderCommit, index of last new entry)
-                  pure (True, updateFollowerState fs)
-    when success resetElectionTimeout
-    send (unLeaderId aeLeaderId) $
-      SendAppendEntriesResponseRPC $
-        AppendEntriesResponse
-          { aerTerm = currentTerm
-          , aerSuccess = success
-          , aerReadRequest = aeReadRequest
-          }
-    pure (followerResultState Noop newFollowerState)
-  where
-    updateFollowerState :: FollowerState v -> FollowerState v
-    updateFollowerState fs =
-      if aeLeaderCommit > fsCommitIndex fs
-        then updateLeader (updateCommitIndex fs)
-        else updateLeader fs
+handleAppendEntries ns@(NodeFollowerState fs) sender ae@AppendEntries{..} = do
+  PersistentState{..} <- get
 
+  let status = shouldApplyAppendEntries currentTerm fs ae
+  newFollowerState <-
+    case status of
+      AERSuccess _ -> do
+        -- 3. If an existing entry conflicts with a new one (same index
+        -- but different terms), delete the existing entry and all that
+        -- follow it.
+        --   &
+        -- 4. Append any new entries not already in the log
+        appendLogEntries aeEntries
+        resetElectionTimeout
+        -- | 5. If leaderCommit > commitIndex, set commitIndex =
+        -- min(leaderCommit, index of last new entry)
+        pure $
+          if aeLeaderCommit > fsCommitIndex fs
+            then updateLeader (updateCommitIndex fs)
+            else updateLeader fs
+      _ -> pure fs
+
+  send (unLeaderId aeLeaderId) $
+    SendAppendEntriesResponseRPC
+      AppendEntriesResponse
+        { aerTerm = currentTerm
+        , aerStatus = status
+        , aerReadRequest = aeReadRequest
+        }
+  pure (followerResultState Noop newFollowerState)
+  where
     updateCommitIndex :: FollowerState v -> FollowerState v
     updateCommitIndex followerState =
       case aeEntries of
@@ -96,6 +82,35 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
 
     updateLeader :: FollowerState v -> FollowerState v
     updateLeader followerState = followerState { fsCurrentLeader = CurrentLeader (LeaderId sender) }
+
+-- | Decide if entries given can be applied
+shouldApplyAppendEntries :: Term -> FollowerState v -> AppendEntries v -> AppendEntriesResponseStatus
+shouldApplyAppendEntries currentTerm fs AppendEntries{..} =
+  if aeTerm < currentTerm
+    -- 1. Reply false if term < currentTerm
+    then AERStaleTerm
+    else
+      case fsTermAtAEPrevIndex fs of
+        Nothing
+          -- there are no previous entries
+          | aePrevLogIndex == index0 -> AERSuccess {aerLatestIndex = Index (fromIntegral $ length aeEntries)}
+          -- the follower doesn't have the previous index given in the AppendEntriesRPC
+          -- the entries we are receiving are beyond the end of our log
+          -- so we respond with the index of the followers last entry + 1
+          | otherwise -> case fsLastLogEntry fs of
+              NoLogEntries -> AERInconsistent {aerNextIndex = incrIndex index0}
+              LastLogEntry entry -> AERInconsistent { aerNextIndex = incrIndex $ entryIndex entry}
+        Just entryAtAEPrevLogIndexTerm ->
+          -- 2. Reply false if log doesn't contain an entry at
+          -- prevLogIndex whose term matches prevLogTerm.
+          if entryAtAEPrevLogIndexTerm /= aePrevLogTerm
+            -- In this case, our log contains an entry that conflicts with the leaders entries
+            -- TODO could try a binary search but ( as the paper says ) in practice
+            -- we doubt this optimisation is necessary, since failures happen infrequently
+            -- and it is unlikely there will be many inconsistent entries
+            then AERInconsistent
+              { aerNextIndex = fsCommitIndex fs }
+            else AERSuccess { aerLatestIndex = aePrevLogIndex + Index (fromIntegral $ length aeEntries)}
 
 -- | Followers should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Follower sm AppendEntriesResponse v

@@ -98,11 +98,30 @@ data AppendEntries v = AppendEntries
     -- ^ which read request the message corresponds to
   } deriving (Show, Generic, Serialize)
 
+-- | Indicates the success of an AppendEntries message
+-- and determines the next message that the leader sends.
+data AppendEntriesResponseStatus
+  = AERSuccess {
+      aerLatestIndex :: Index
+      -- ^ followers latest log index
+      -- used to update the leaders matchIndex map
+  }
+  | AERStaleTerm -- ^ term given was stale (older) than followers term
+  | AERInconsistent {
+      aerNextIndex :: Index
+      -- ^ used to update the leaders nextIndex map
+      -- In cases where the follower is behind,
+      -- this is set to the index of the latest entry of the follower.
+      -- In cases of inconsistencies between the term of the followers last entry and the term of the aePrevLogTerm
+      -- we send the commit index of the follower
+    }
+  deriving (Eq, Show, Generic, Serialize)
+
 -- | Representation of the response from a follower to an AppendEntries message
 data AppendEntriesResponse = AppendEntriesResponse
   { aerTerm :: Term
     -- ^ current term for leader to update itself
-  , aerSuccess :: Bool
+  , aerStatus :: AppendEntriesResponseStatus
     -- ^ true if follower contained entry matching aePrevLogIndex and aePrevLogTerm
   , aerReadRequest :: Maybe Int
     -- ^ which read request the response corresponds to

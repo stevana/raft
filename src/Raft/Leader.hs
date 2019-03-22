@@ -46,20 +46,10 @@ handleAppendEntries (NodeLeaderState ls)_ _  =
   pure (leaderResultState Noop ls)
 
 handleAppendEntriesResponse :: forall sm v. RPCHandler 'Leader sm AppendEntriesResponse v
-handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp =
+handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp = do
   case aerReadRequest appendEntriesResp of
-    Nothing -> leaderResultState Noop <$>
-      if aerSuccess appendEntriesResp
-        then do
-          let lsUpdatedIndices = updateMatchAndIncrNextIndex sender ls
-          -- Increment leader commit index if now a majority of followers have
-          -- replicated an entry at a given term.
-          lsUpdatedCommitIdx <- incrCommitIndex lsUpdatedIndices
-          when
-            (lsCommitIndex lsUpdatedCommitIdx > lsCommitIndex lsUpdatedIndices)
-            $ updateClientReqCacheFromIdx (lsCommitIndex lsUpdatedIndices)
-          pure lsUpdatedCommitIdx
-        else decrFollowerNextIndexThenRetry
+    Nothing ->
+      leaderResultState Noop <$> handleAERStatus (aerStatus appendEntriesResp)
     -- If appendEntriesResp is a read request, we ignore the value of aerSuccess
     -- and don't decrement nextIndex. All read request AppendEntriesResponse seem to have
     -- aerSuccess False
@@ -68,24 +58,39 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp =
   where
     -- | Increment nextIndex to send to follower,
     -- update index of highest log entry replicated on follower
-    updateMatchAndIncrNextIndex :: NodeId -> LeaderState v -> LeaderState v
-    updateMatchAndIncrNextIndex sender leaderState =
-      let lastLogEntryIdx = lastLogEntryIndex (lsLastLogEntry leaderState)
-          newNextIndices = Map.insert sender (lastLogEntryIdx + 1) (lsNextIndex leaderState)
-          newMatchIndices = Map.insert sender lastLogEntryIdx (lsMatchIndex leaderState)
-          -- TODO ^^ is this wrong seeing as it's the latest entry on the leader?
-          -- ( not the latest on the follower, as described in the paper, see fig 2. )
-      in ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
+    handleAERStatus
+      :: AppendEntriesResponseStatus
+      -> TransitionM sm v (LeaderState v)
+    handleAERStatus status  =
+      case status of
+        -- If a follower receivers an AppendEntries with a stale term number,
+        -- no behaviour is specified
+        AERStaleTerm -> pure ls
+        -- If AppendEntries fails because of log inconsistency,
+        AERInconsistent aerNextIndex -> do
+          let newNextIndices = Map.insert sender aerNextIndex (lsNextIndex ls)
+              newLeaderState = ls { lsNextIndex = newNextIndices }
+              Just newNextIndex = Map.lookup sender newNextIndices
+          -- then retry
+          aeData <- mkAppendEntriesData newLeaderState (FromIndex newNextIndex)
+          send sender (SendAppendEntriesRPC aeData)
+          pure newLeaderState
+        AERSuccess aerLatestIndex -> do
+          let lsUpdatedIndices = updateMatchAndIncrNextIndex sender aerLatestIndex ls
+          -- Increment leader commit index if now a majority of followers have
+          -- replicated an entry at a given term.
+          lsUpdatedCommitIdx <- incrCommitIndex lsUpdatedIndices
+          when (lsCommitIndex lsUpdatedCommitIdx > lsCommitIndex lsUpdatedIndices)
+            $ updateClientReqCacheFromIdx (lsCommitIndex lsUpdatedIndices)
+          pure lsUpdatedCommitIdx
 
-    -- | If AppendEntries fails (aerSuccess == False) because of log inconsistency,
-    -- decrement nextIndex and retry
-    decrFollowerNextIndexThenRetry = do
-      let newNextIndices = Map.adjust decrIndexWithDefault0 sender (lsNextIndex ls)
-          newLeaderState = ls { lsNextIndex = newNextIndices }
-          Just newNextIndex = Map.lookup sender newNextIndices
-      aeData <- mkAppendEntriesData newLeaderState (FromIndex newNextIndex)
-      send sender (SendAppendEntriesRPC aeData)
-      pure newLeaderState
+    -- | Increment nextIndex to send to follower,
+    -- update index of highest log entry replicated on follower
+    updateMatchAndIncrNextIndex :: NodeId -> Index -> LeaderState v -> LeaderState v
+    updateMatchAndIncrNextIndex sender followerLatestIndex leaderState =
+      let newNextIndices = Map.insert sender (followerLatestIndex + 1) (lsNextIndex leaderState)
+          newMatchIndices = Map.insert sender followerLatestIndex (lsMatchIndex leaderState)
+      in ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
 
     handleReadReq :: Int -> LeaderState v -> TransitionM sm v (ResultState 'Leader v)
     handleReadReq n leaderState = do

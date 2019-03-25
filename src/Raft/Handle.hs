@@ -53,18 +53,21 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
             -- If RPC request or response contains term T > currentTerm: set
             -- currentTerm = T, convert to follower
             currentTerm <- gets currentTerm
-            if currentTerm < rpcTerm rpc
-              then
-                case convertToFollower initNodeState of
-                  ResultState _ nodeState -> do
-                    modify $ \pstate ->
-                      pstate { currentTerm = rpcTerm rpc
-                             , votedFor = Nothing
-                             }
-                    resetElectionTimeout
-                    pure (RaftNodeState nodeState)
+            if (currentTerm < rpcTerm rpc)
+              then mkNewRaftNodeState rpc
               else pure raftNodeState
         _ -> ((raftNodeState, []), persistentState, mempty)
+
+    mkNewRaftNodeState :: RPC v -> TransitionM sm v (RaftNodeState v)
+    mkNewRaftNodeState rpc =
+      case convertToFollower initNodeState of
+        ResultState _ nodeState -> do
+          modify $ \pstate ->
+            pstate { currentTerm = rpcTerm rpc
+                   , votedFor = Nothing
+                   }
+          resetElectionTimeout
+          pure (RaftNodeState nodeState)
 
     convertToFollower :: forall s. NodeState s v -> ResultState s v
     convertToFollower nodeState =

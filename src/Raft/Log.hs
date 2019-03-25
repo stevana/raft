@@ -47,6 +47,7 @@ module Raft.Log (
   updateLog,
   clientReqData,
   readEntries,
+  readEntriesByIndices,
 
 ) where
 

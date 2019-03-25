@@ -111,6 +111,7 @@ import Control.Monad.Fail
 import Control.Monad.Catch
 
 import qualified Data.Map as Map
+import qualified Data.Text as T
 import Data.Serialize (Serialize)
 import Data.Sequence (Seq(..), singleton)
 import Data.Time.Clock.System (getSystemTime)
@@ -228,6 +229,8 @@ handleEventLoop
      , RaftSendClient m sm v
      , RaftLog m v
      , RaftLogExceptions m
+     , RaftReadLog m v
+     , Show v
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
@@ -415,7 +418,8 @@ handleAction action = do
       RaftNodeState ns <- get
       case ns of
         NodeLeaderState ls@LeaderState{..} -> do
-          eentries <- lift (readLogEntriesFrom idx)
+          let idxInterval = IndexInterval (Just idx) (Just lsCommitIndex)
+          eentries <- lift (readEntriesByIndices idxInterval)
           case eentries of
             Left err -> throwM err
             Right (entries :: Entries v) ->  do

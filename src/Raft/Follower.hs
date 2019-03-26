@@ -72,7 +72,7 @@ handleAppendEntries ns@(NodeFollowerState fs) sender ae@AppendEntries{..} = do
         }
   pure (followerResultState Noop newFollowerState)
   where
-    updateCommitIndex :: FollowerState v -> FollowerState v
+    updateCommitIndex :: FollowerState sm v -> FollowerState sm v
     updateCommitIndex followerState =
       case aeEntries of
         Empty -> followerState
@@ -80,11 +80,11 @@ handleAppendEntries ns@(NodeFollowerState fs) sender ae@AppendEntries{..} = do
           let newCommitIndex = min aeLeaderCommit (entryIndex e)
           in followerState { fsCommitIndex = newCommitIndex }
 
-    updateLeader :: FollowerState v -> FollowerState v
+    updateLeader :: FollowerState sm v -> FollowerState sm v
     updateLeader followerState = followerState { fsCurrentLeader = CurrentLeader (LeaderId sender) }
 
 -- | Decide if entries given can be applied
-shouldApplyAppendEntries :: Term -> FollowerState v -> AppendEntries v -> AppendEntriesResponseStatus
+shouldApplyAppendEntries :: Term -> FollowerState sm v -> AppendEntries v -> AppendEntriesResponseStatus
 shouldApplyAppendEntries currentTerm fs AppendEntries{..} =
   if aeTerm < currentTerm
     -- 1. Reply false if term < currentTerm

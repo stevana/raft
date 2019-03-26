@@ -101,6 +101,12 @@ data Entry v = Entry
 
 type Entries v = Seq (Entry v)
 
+lastLogEntry :: Entries v -> LastLogEntry v
+lastLogEntry entries =
+  case entries of
+    Empty -> NoLogEntries
+    _ :|> e -> LastLogEntry e
+
 lastEntryIndex :: Entries v -> Maybe Index
 lastEntryIndex entries =
   case entries of
@@ -270,7 +276,7 @@ updateLog
      , RaftWriteLog m v, Exception (RaftWriteLogError m)
      )
   => Entries v
-  -> m (Either (RaftLogError m) (Maybe Index))
+  -> m (Either (RaftLogError m) (Maybe (LastLogEntry v)))
 updateLog entries =
   case entries of
     Empty -> pure (Right Nothing)
@@ -282,7 +288,7 @@ updateLog entries =
           eRes <- first RaftLogWriteError <$> writeLogEntries entries
           case eRes of
             Left err -> pure (Left err)
-            Right () -> pure (Right (lastEntryIndex entries))
+            Right () -> pure (Right (Just (lastLogEntry entries)))
 
 
 --------------------------------------------------------------------------------

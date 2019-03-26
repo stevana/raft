@@ -111,7 +111,6 @@ import Control.Monad.Fail
 import Control.Monad.Catch
 
 import qualified Data.Map as Map
-import qualified Data.Text as T
 import Data.Serialize (Serialize)
 import Data.Sequence (Seq(..), singleton)
 import Data.Time.Clock.System (getSystemTime)
@@ -152,7 +151,7 @@ runRaftNode
      )
    => RaftNodeConfig         -- ^ Node configuration
    -> OptionalRaftNodeConfig -- ^ Config values that can be provided optionally
-   -> LogCtx (RaftT v m)     -- ^ The means with which to log messages
+   -> LogCtx (RaftT sm v m)     -- ^ The means with which to log messages
    -> sm                     -- ^ Initial state machine state
    -> m ()
 runRaftNode nodeConfig@RaftNodeConfig{..} optConfig logCtx initStateMachine = do
@@ -198,8 +197,8 @@ runRaftNode nodeConfig@RaftNodeConfig{..} optConfig logCtx initStateMachine = do
       electionTimeoutTimer @m @v eventChan electionTimer
     raftFork (CustomThreadRole "Heartbeat Timeout Timer") . lift $
       heartbeatTimeoutTimer @m @v eventChan heartbeatTimer
-    raftFork RPCHandler (rpcHandler @m @v eventChan)
-    raftFork ClientRequestHandler (clientReqHandler @m @v eventChan)
+    raftFork RPCHandler (rpcHandler @sm @v @m eventChan)
+    raftFork ClientRequestHandler (clientReqHandler @sm @v @m eventChan)
 
     -- Start the main event handling loop
     handleEventLoop initStateMachine
@@ -235,9 +234,8 @@ handleEventLoop
      , Exception (RaftPersistError m)
      )
   => sm
-  -> RaftT v m ()
+  -> RaftT sm v m ()
 handleEventLoop initStateMachine = do
-    setInitLastLogEntry
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throwM err
@@ -252,17 +250,20 @@ handleEventLoop initStateMachine = do
     --
     -- This function returns 'Nothing' if the event was not valid, and returns
     -- the result of the continuation function wrapped in 'Just', otherwise.
-    withValidatedEvent :: sm -> (Event v -> RaftT v m a) -> RaftT v m (Maybe a)
-    withValidatedEvent stateMachine f = do
+    withValidatedEvent :: (Event v -> RaftT sm v m a) -> RaftT sm v m (Maybe a)
+    withValidatedEvent f = do
       event <- lift . readRaftChan =<< asks eventChan
       RaftNodeState raftNodeState <- get
       case raftNodeState of
-        NodeLeaderState _ -> do
+        NodeLeaderState ls -> do
           case event of
             MessageEvent (ClientRequestEvent (ClientRequest cid creq)) ->
               case creq of
                 ClientWriteReq (ClientCmdReq serial cmd) -> do
-                  eRes <- lift (applyLogCmd MonadicValidation stateMachine cmd)
+                  -- apply log to the tentative state machine comprised of the
+                  -- current state machine plus all commands that are waiting
+                  -- to be replicated to all followers
+                  eRes <- lift (applyLogCmd MonadicValidation (lsStateMachine ls) cmd)
                   case eRes of
                     Left err -> do
                       -- Increments the number of invalid commands seen during
@@ -272,19 +273,24 @@ handleEventLoop initStateMachine = do
                           clientFailRespAction = RespondToClient cid clientWriteRespSpec
                       handleAction clientFailRespAction
                       pure Nothing
-                    -- Don't actually do anything if validating the command succeeds
-                    Right _ -> Just <$> f event
+                    -- Update the leader cumulative state machine for future
+                    -- validation of new client write request commands
+                    Right lsStateMachine' -> do
+                      let lsNewStateMachine = ls { lsStateMachine = lsStateMachine' }
+                      put (RaftNodeState (NodeLeaderState lsNewStateMachine))
+                      Just <$> f event
                 _ -> Just <$> f event
             _ -> Just <$> f event
         _ -> Just <$> f event
 
-    handleEventLoop' :: sm -> PersistentState -> RaftT v m ()
+    handleEventLoop' :: sm -> PersistentState -> RaftT sm v m ()
     handleEventLoop' stateMachine persistentState = do
 
+      setInitLastLogEntry
       Metrics.incrEventsHandledCounter
 
       mRes <-
-        withValidatedEvent stateMachine $ \event -> do
+        withValidatedEvent $ \event -> do
           loadLogEntryTermAtAePrevLogIndex event
           raftNodeState@(RaftNodeState nodeState) <- get
 
@@ -328,7 +334,7 @@ handleEventLoop initStateMachine = do
 
     -- In the case that a node is a follower receiving an AppendEntriesRPC
     -- Event, read the log at the aePrevLogIndex
-    loadLogEntryTermAtAePrevLogIndex :: Event v -> RaftT v m ()
+    loadLogEntryTermAtAePrevLogIndex :: Event v -> RaftT sm v m ()
     loadLogEntryTermAtAePrevLogIndex event =
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ (AppendEntriesRPC ae))) -> do
@@ -345,7 +351,7 @@ handleEventLoop initStateMachine = do
         _ -> pure ()
 
     -- Load the last log entry from a existing log
-    setInitLastLogEntry :: RaftT v m ()
+    setInitLastLogEntry :: RaftT sm v m ()
     setInitLastLogEntry = do
       RaftNodeState rns <- get
       eLogEntry <- lift readLastLogEntry
@@ -357,8 +363,8 @@ handleEventLoop initStateMachine = do
 
 -- | Handles all actions produced by the main 'handleEventLoop'' call.
 handleActions
-  :: ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m), Typeable m
-     , MonadIO m, MonadRaft v m, MonadThrow m, MonadMask m
+  :: ( Show v, Serialize v, Show sm, Show (Action sm v), Show (RaftLogError m)
+     , Typeable m, MonadIO m, MonadRaft v m, MonadThrow m, MonadMask m
      , RaftStateMachine m sm v
      , RaftSendRPC m v
      , RaftSendClient m sm v
@@ -366,14 +372,14 @@ handleActions
      , RaftLogExceptions m
      )
   => [Action sm v]
-  -> RaftT v m ()
+  -> RaftT sm v m ()
 handleActions actions = do
   mapM_ handleAction actions
 
 handleAction
   :: forall sm v m.
-     ( Show v, Show sm, Show (Action sm v), Show (RaftLogError m), Typeable m
-     , MonadIO m, MonadRaft v m, MonadThrow m
+     ( Show v, Serialize v, Show sm, Show (Action sm v)
+     , Show (RaftLogError m), Typeable m, MonadIO m, MonadRaft v m, MonadThrow m
      , RaftStateMachine m sm v
      , RaftSendRPC m v
      , RaftSendClient m sm v
@@ -381,7 +387,7 @@ handleAction
      , RaftLogExceptions m
      )
   => Action sm v
-  -> RaftT v m ()
+  -> RaftT sm v m ()
 handleAction action = do
   logDebug $ "Handling [Action]: " <> show action
   case action of
@@ -406,11 +412,13 @@ handleAction action = do
       eRes <- lift (updateLog entries)
       case eRes of
         Left err -> logAndPanic (show err)
-        Right midx -> do
+        Right mLastLogEntry -> do
           -- Update the last log entry index metrics
-          case midx of
+          case mLastLogEntry of
             Nothing -> pure ()
-            Just idx -> Metrics.setLastLogEntryIndexGauge idx
+            Just lastLogEntry -> do
+              Metrics.setLastLogEntryIndexGauge lastLogEntry
+              Metrics.setLastLogEntryHashLabel lastLogEntry
           -- Update the last log entry data
           modify $ \(RaftNodeState ns) ->
             RaftNodeState (setLastLogEntry ns entries)
@@ -431,23 +439,23 @@ handleAction action = do
                   ls { lsClientReqCache = creqMap `Map.union` lsClientReqCache }
         _ -> logAndPanic "Only the leader should update the client request cache..."
   where
-    sendRPCThread :: NodeId -> RPCMessage v -> RaftT v m ()
+    sendRPCThread :: NodeId -> RPCMessage v -> RaftT sm v m ()
     sendRPCThread nid rpcMsg =
       void (raftFork (CustomThreadRole "Send RPC") (lift (sendRPC nid rpcMsg)))
-    respondToClientWrite :: (ClientId, (SerialNum, Index)) -> RaftT v m ()
+    respondToClientWrite :: (ClientId, (SerialNum, Index)) -> RaftT sm v m ()
     respondToClientWrite (cid, (sn,idx)) = do
       let clientWriteRespSpec =
             ClientWriteRespSpec @sm (ClientWriteRespSpecSuccess idx sn)
       respondToClient cid clientWriteRespSpec
 
-    respondToClient :: ClientId -> ClientRespSpec sm v -> RaftT v m ()
+    respondToClient :: ClientId -> ClientRespSpec sm v -> RaftT sm v m ()
     respondToClient cid crs = do
       void $ raftFork (CustomThreadRole "Respond to Client") $ do
         clientResp <- mkClientResp crs
         -- TODO log failure if sendClient fails
         lift (sendClient cid clientResp)
 
-    mkClientResp :: ClientRespSpec sm v -> RaftT v m (ClientResponse sm v)
+    mkClientResp :: ClientRespSpec sm v -> RaftT sm v m (ClientResponse sm v)
     mkClientResp crs =
       case crs of
         ClientReadRespSpec crrs ->
@@ -475,7 +483,7 @@ handleAction action = do
         ClientMetricsRespSpec rnm ->
           pure (ClientMetricsResponse (ClientMetricsResp rnm))
 
-    mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
+    mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT sm v m (RPCMessage v)
     mkRPCfromSendRPCAction sendRPCAction = do
       RaftNodeState ns <- get
       nodeConfig <- asks raftNodeConfig
@@ -557,7 +565,7 @@ applyLogEntries
      , RaftStateMachine m sm v
      )
   => sm
-  -> RaftT v m sm
+  -> RaftT sm v m sm
 applyLogEntries stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
     if commitIndex nodeState > lastApplied nodeState
@@ -584,7 +592,7 @@ applyLogEntries stateMachine = do
               Right nsm -> applyLogEntries nsm
       else pure stateMachine
   where
-    incrLastApplied :: NodeState ns v -> NodeState ns v
+    incrLastApplied :: NodeState ns sm v -> NodeState ns sm v
     incrLastApplied nodeState =
       case nodeState of
         NodeFollowerState fs ->
@@ -597,16 +605,16 @@ applyLogEntries stateMachine = do
           let lastApplied' = incrIndex (lsLastApplied ls)
            in NodeLeaderState $ ls { lsLastApplied = lastApplied' }
 
-    lastApplied :: NodeState ns v -> Index
+    lastApplied :: NodeState ns sm v -> Index
     lastApplied = fst . getLastAppliedAndCommitIndex
 
-    commitIndex :: NodeState ns v -> Index
+    commitIndex :: NodeState ns sm v -> Index
     commitIndex = snd . getLastAppliedAndCommitIndex
 
 handleLogs
   :: (MonadIO m, MonadRaft v m)
   => [LogMsg]
-  -> RaftT v m ()
+  -> RaftT sm v m ()
 handleLogs logs = do
   logCtx <- asks raftNodeLogCtx
   mapM_ (logToDest logCtx) logs
@@ -617,9 +625,9 @@ handleLogs logs = do
 
 -- | Producer for rpc message events
 rpcHandler
-  :: forall m v. (MonadIO m, MonadRaft v m, MonadCatch m, Show v, RaftRecvRPC m v)
+  :: forall sm v m. (MonadIO m, MonadRaft v m, MonadCatch m, Show v, RaftRecvRPC m v)
   => RaftEventChan v m
-  -> RaftT v m ()
+  -> RaftT sm v m ()
 rpcHandler eventChan =
   forever $ do
     eRpcMsg <- lift $ Control.Monad.Catch.try receiveRPC
@@ -632,9 +640,9 @@ rpcHandler eventChan =
 
 -- | Producer for rpc message events
 clientReqHandler
-  :: forall m v. (MonadIO m, MonadRaft v m, MonadCatch m, RaftRecvClient m v)
+  :: forall sm v m. (MonadIO m, MonadRaft v m, MonadCatch m, RaftRecvClient m v)
   => RaftEventChan v m
-  -> RaftT v m ()
+  -> RaftT sm v m ()
 clientReqHandler eventChan =
   forever $ do
     eClientReq <- lift $ Control.Monad.Catch.try receiveClient

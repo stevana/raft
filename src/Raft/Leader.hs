@@ -60,7 +60,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp = d
     -- update index of highest log entry replicated on follower
     handleAERStatus
       :: AppendEntriesResponseStatus
-      -> TransitionM sm v (LeaderState v)
+      -> TransitionM sm v (LeaderState sm v)
     handleAERStatus status  =
       case status of
         -- If a follower receivers an AppendEntries with a stale term number,
@@ -86,13 +86,13 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp = d
 
     -- | Increment nextIndex to send to follower,
     -- update index of highest log entry replicated on follower
-    updateMatchAndIncrNextIndex :: NodeId -> Index -> LeaderState v -> LeaderState v
+    updateMatchAndIncrNextIndex :: NodeId -> Index -> LeaderState sm v -> LeaderState sm v
     updateMatchAndIncrNextIndex sender followerLatestIndex leaderState =
       let newNextIndices = Map.insert sender (followerLatestIndex + 1) (lsNextIndex leaderState)
           newMatchIndices = Map.insert sender followerLatestIndex (lsMatchIndex leaderState)
-      in ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
+      in leaderState { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
 
-    handleReadReq :: Int -> LeaderState v -> TransitionM sm v (ResultState 'Leader v)
+    handleReadReq :: Int -> LeaderState sm v -> TransitionM sm v (ResultState 'Leader sm v)
     handleReadReq n leaderState = do
       networkSize <- Set.size <$> asks (raftConfigNodeIds . nodeConfig)
       let initReadReqs = lsReadRequest leaderState
@@ -129,7 +129,7 @@ handleRequestVoteResponse :: RPCHandler 'Leader sm RequestVoteResponse v
 handleRequestVoteResponse (NodeLeaderState ls) _ _ =
   pure (leaderResultState Noop ls)
 
-handleTimeout :: Show v => TimeoutHandler 'Leader sm v
+handleTimeout :: TimeoutHandler 'Leader sm v
 handleTimeout (NodeLeaderState ls) timeout =
   case timeout of
     -- Leader does not handle election timeouts
@@ -140,7 +140,7 @@ handleTimeout (NodeLeaderState ls) timeout =
       broadcast (SendAppendEntriesRPC aeData)
       pure (leaderResultState SendHeartbeat ls)
 
-handleClientReadRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader ClientReadReq sm v
+handleClientReadRequest :: ClientReqHandler 'Leader ClientReadReq sm v
 handleClientReadRequest (NodeLeaderState ls@LeaderState{..}) cid crr = do
   heartbeat <- mkAppendEntriesData ls (NoEntries (FromClientReadReq lsReadReqsHandled))
   broadcast (SendAppendEntriesRPC heartbeat)
@@ -150,7 +150,7 @@ handleClientReadRequest (NodeLeaderState ls@LeaderState{..}) cid crr = do
       Map.insert lsReadReqsHandled (clientReqData, 1) lsReadRequest
   }
 
-handleClientWriteRequest :: (Show v, Serialize v) => ClientReqHandler 'Leader (ClientWriteReq v) sm v
+handleClientWriteRequest :: Serialize v => ClientReqHandler 'Leader (ClientWriteReq v) sm v
 handleClientWriteRequest (NodeLeaderState ls@LeaderState{..}) cid (ClientCmdReq serial v) =
   leaderResultState HandleClientReq <$>
     case Map.lookup cid lsClientReqCache of
@@ -192,7 +192,7 @@ handleClientWriteRequest (NodeLeaderState ls@LeaderState{..}) cid (ClientCmdReq 
 
 -- | If there exists an N such that N > commitIndex, a majority of
 -- matchIndex[i] >= N, and log[N].term == currentTerm: set commitIndex = N
-incrCommitIndex :: Show v => LeaderState v -> TransitionM sm v (LeaderState v)
+incrCommitIndex :: Show v => LeaderState sm v -> TransitionM sm v (LeaderState sm v)
 incrCommitIndex leaderState@LeaderState{..} = do
     logDebug "Checking if commit index should be incremented..."
     let lastEntryTerm = lastLogEntryTerm lsLastLogEntry
@@ -225,8 +225,8 @@ isMajority n m = n > m `div` 2
 
 -- | Construct an AppendEntriesRPC given log entries and a leader state.
 mkAppendEntriesData
-  :: Show v
-  => LeaderState v
+  :: (Show sm, Show v)
+  => LeaderState sm v
   -> AppendEntriesSpec v
   -> TransitionM sm v (AppendEntriesData v)
 mkAppendEntriesData ls entriesSpec = do

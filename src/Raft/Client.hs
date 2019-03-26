@@ -54,7 +54,6 @@ module Raft.Client
 , initRaftClientState
 
 , RaftClientT(..)
-, unRaftClientT
 , runRaftClientT
 
 , RaftClientError(..)

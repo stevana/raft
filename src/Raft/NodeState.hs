@@ -35,46 +35,46 @@ data Transition (init :: Mode) (res :: Mode) where
 deriving instance Show (Transition init res)
 
 -- | Existential type hiding the result type of a transition
-data ResultState init v where
+data ResultState init sm v where
   ResultState
-    :: Show v
+    :: (Show sm, Show v)
     => Transition init res
-    -> NodeState res v
-    -> ResultState init v
+    -> NodeState res sm v
+    -> ResultState init sm v
 
-deriving instance Show v => Show (ResultState init v)
+deriving instance (Show sm, Show v) => Show (ResultState init sm v)
 
 followerResultState
-  :: Show v
+  :: (Show sm, Show v)
   => Transition init 'Follower
-  -> FollowerState v
-  -> ResultState init v
+  -> FollowerState sm v
+  -> ResultState init sm v
 followerResultState transition fstate =
   ResultState transition (NodeFollowerState fstate)
 
 candidateResultState
-  :: Show v
+  :: (Show sm, Show v)
   => Transition init 'Candidate
-  -> CandidateState v
-  -> ResultState init v
+  -> CandidateState sm v
+  -> ResultState init sm v
 candidateResultState transition cstate =
   ResultState transition (NodeCandidateState cstate)
 
 leaderResultState
-  :: Show v
+  :: (Show sm, Show v)
   => Transition init 'Leader
-  -> LeaderState v
-  -> ResultState init v
+  -> LeaderState sm v
+  -> ResultState init sm v
 leaderResultState transition lstate =
   ResultState transition (NodeLeaderState lstate)
 
 -- | Existential type hiding the internal node state
-data RaftNodeState v where
-  RaftNodeState :: { unRaftNodeState :: NodeState s v } -> RaftNodeState v
+data RaftNodeState sm v where
+  RaftNodeState :: { unRaftNodeState :: NodeState s sm v } -> RaftNodeState sm v
 
-deriving instance Show v => Show (RaftNodeState v)
+deriving instance (Show sm, Show v) => Show (RaftNodeState sm v)
 
-nodeMode :: RaftNodeState v -> Mode
+nodeMode :: RaftNodeState sm v -> Mode
 nodeMode (RaftNodeState rns) =
   case rns of
     NodeFollowerState _ -> Follower
@@ -82,7 +82,7 @@ nodeMode (RaftNodeState rns) =
     NodeLeaderState _ -> Leader
 
 -- | A node in Raft begins as a follower
-initRaftNodeState :: RaftNodeState v
+initRaftNodeState :: RaftNodeState sm v
 initRaftNodeState =
   RaftNodeState $
     NodeFollowerState FollowerState
@@ -95,14 +95,14 @@ initRaftNodeState =
       }
 
 -- | The volatile state of a Raft Node
-data NodeState (a :: Mode) v where
-  NodeFollowerState :: FollowerState v -> NodeState 'Follower v
-  NodeCandidateState :: CandidateState v -> NodeState 'Candidate v
-  NodeLeaderState :: LeaderState v -> NodeState 'Leader v
+data NodeState (a :: Mode) sm v where
+  NodeFollowerState :: FollowerState sm v -> NodeState 'Follower sm v
+  NodeCandidateState :: CandidateState sm v -> NodeState 'Candidate sm v
+  NodeLeaderState :: LeaderState sm v -> NodeState 'Leader sm v
 
-deriving instance Show v => Show (NodeState s v)
+deriving instance (Show sm, Show v) => Show (NodeState s sm v)
 
-data FollowerState v = FollowerState
+data FollowerState sm v = FollowerState
   { fsCurrentLeader :: CurrentLeader
     -- ^ Id of the current leader
   , fsCommitIndex :: Index
@@ -118,7 +118,7 @@ data FollowerState v = FollowerState
     -- clients
   } deriving (Show)
 
-data CandidateState v = CandidateState
+data CandidateState sm v = CandidateState
   { csCommitIndex :: Index
     -- ^ Index of highest log entry known to be committed
   , csLastApplied :: Index
@@ -146,7 +146,7 @@ type ClientReadReqs = Map Int (ClientReadReqData, Int)
 -- requests and the index of the entry if it has been replicated.
 type ClientWriteReqCache = Map ClientId (SerialNum, Maybe Index)
 
-data LeaderState v = LeaderState
+data LeaderState sm v = LeaderState
   { lsCommitIndex :: Index
     -- ^ Index of highest log entry known to be committed
   , lsLastApplied :: Index
@@ -165,6 +165,9 @@ data LeaderState v = LeaderState
     -- request heartbeat.
   , lsClientReqCache :: ClientWriteReqCache
     -- ^ The cache of client write requests received by the leader
+  , lsStateMachine :: sm
+    -- ^ The tentative state machine against which to validate client write
+    -- requests
   } deriving (Show)
 
 --------------------------------------------------------------------------------
@@ -172,7 +175,7 @@ data LeaderState v = LeaderState
 --------------------------------------------------------------------------------
 
 -- | Update the last log entry in the node's log
-setLastLogEntry :: NodeState s v -> Entries v -> NodeState s v
+setLastLogEntry :: NodeState s sm v -> Entries v -> NodeState s sm v
 setLastLogEntry nodeState entries =
   case entries of
     Empty -> nodeState
@@ -188,17 +191,17 @@ setLastLogEntry nodeState entries =
 
 -- | Get the last applied index and the commit index of the last log entry in
 -- the node's log
-getLastLogEntry :: NodeState ns v -> LastLogEntry v
+getLastLogEntry :: NodeState ns sm v -> LastLogEntry v
 getLastLogEntry nodeState =
   case nodeState of
     NodeFollowerState fs -> fsLastLogEntry fs
     NodeCandidateState cs -> csLastLogEntry cs
     NodeLeaderState ls -> lsLastLogEntry ls
 
-getLastLogEntryIndex :: NodeState ns v -> Index
+getLastLogEntryIndex :: NodeState ns sm v -> Index
 getLastLogEntryIndex = lastLogEntryIndex . getLastLogEntry
 
-getCommitIndex :: NodeState ns v -> Index
+getCommitIndex :: NodeState ns sm v -> Index
 getCommitIndex nodeState =
   case nodeState of
     NodeFollowerState fs -> fsCommitIndex fs
@@ -207,7 +210,7 @@ getCommitIndex nodeState =
 
 -- | Get the index of highest log entry applied to state machine and the index
 -- of highest log entry known to be committed
-getLastAppliedAndCommitIndex :: NodeState ns v -> (Index, Index)
+getLastAppliedAndCommitIndex :: NodeState ns sm v -> (Index, Index)
 getLastAppliedAndCommitIndex nodeState =
   case nodeState of
     NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
@@ -215,21 +218,21 @@ getLastAppliedAndCommitIndex nodeState =
     NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
 
 -- | Check if node is in a follower state
-isFollower :: NodeState s v -> Bool
+isFollower :: NodeState s sm v -> Bool
 isFollower nodeState =
   case nodeState of
     NodeFollowerState _ -> True
     _ -> False
 
 -- | Check if node is in a candidate state
-isCandidate :: NodeState s v -> Bool
+isCandidate :: NodeState s sm v -> Bool
 isCandidate nodeState =
   case nodeState of
     NodeCandidateState _ -> True
     _ -> False
 
 -- | Check if node is in a leader state
-isLeader :: NodeState s v -> Bool
+isLeader :: NodeState s sm v -> Bool
 isLeader nodeState =
   case nodeState of
     NodeLeaderState _ -> True

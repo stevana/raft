@@ -24,7 +24,7 @@ import Data.Serialize (Serialize)
 
 import qualified System.Metrics as EKG
 
-import Raft.Log (LastLogEntry, EntryHash(..), hashLastLogEntry, genesisHash)
+import Raft.Log (LastLogEntry, EntryHash(..), hashLastLogEntry, lastLogEntryIndex, genesisHash)
 import Raft.Types (Index, Mode(..))
 
 ------------------------------------------------------------------------------
@@ -128,8 +128,8 @@ lookupGaugeValue gauge sample =
 setRaftNodeGauge :: (MonadIO m, Metrics.MonadMetrics m) => RaftNodeGauge -> Int -> m ()
 setRaftNodeGauge gauge n = Metrics.gauge (show gauge) n
 
-setLastLogEntryIndexGauge :: (MonadIO m, Metrics.MonadMetrics m) => Index -> m ()
-setLastLogEntryIndexGauge = setRaftNodeGauge LastLogEntryIndexGauge . fromIntegral
+setLastLogEntryIndexGauge :: (MonadIO m, Metrics.MonadMetrics m) => LastLogEntry v -> m ()
+setLastLogEntryIndexGauge = setRaftNodeGauge LastLogEntryIndexGauge . fromIntegral . lastLogEntryIndex
 
 setCommitIndexGauge :: (MonadIO m, Metrics.MonadMetrics m) => Index -> m ()
 setCommitIndexGauge = setRaftNodeGauge CommitIndexGauge . fromIntegral

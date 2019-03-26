@@ -1,4 +1,5 @@
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -120,38 +121,40 @@ instance MonadRaftFork ConcIO where
 
 -- | The raft server environment composed of the concurrent variables used in
 -- the effectful raft layer.
-data RaftEnv v m = RaftEnv
+data RaftEnv sm v m = RaftEnv
   { eventChan :: RaftEventChan v m
   , resetElectionTimer :: m ()
   , resetHeartbeatTimer :: m ()
   , raftNodeConfig :: RaftNodeConfig
-  , raftNodeLogCtx :: LogCtx (RaftT v m)
+  , raftNodeLogCtx :: LogCtx (RaftT sm v m)
   , raftNodeMetrics :: Metrics.Metrics
   }
 
-newtype RaftT v m a = RaftT
-  { unRaftT :: ReaderT (RaftEnv v m) (StateT (RaftNodeState v) m) a
-  } deriving newtype (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState v), MonadFail, Alternative, MonadPlus)
+newtype RaftT sm v m a = RaftT
+  { unRaftT :: ReaderT (RaftEnv sm v m) (StateT (RaftNodeState sm v) m) a
+  } deriving newtype (Functor, Applicative, Monad, MonadReader (RaftEnv sm v m), MonadState (RaftNodeState sm v), MonadFail, Alternative, MonadPlus)
 
-instance MonadTrans (RaftT v) where
+instance MonadTrans (RaftT sm v) where
   lift = RaftT . lift . lift
 
-deriving newtype instance MonadIO m => MonadIO (RaftT v m)
-deriving newtype instance MonadThrow m => MonadThrow (RaftT v m)
-deriving newtype instance MonadCatch m => MonadCatch (RaftT v m)
-deriving newtype instance MonadMask m => MonadMask (RaftT v m)
+deriving newtype instance MonadIO m => MonadIO (RaftT sm v m)
+deriving newtype instance MonadThrow m => MonadThrow (RaftT sm v m)
+deriving newtype instance MonadCatch m => MonadCatch (RaftT sm v m)
+deriving newtype instance MonadMask m => MonadMask (RaftT sm v m)
 
-instance MonadRaftFork m => MonadRaftFork (RaftT v m) where
-  type RaftThreadId (RaftT v m) = RaftThreadId m
+instance MonadRaftFork m => MonadRaftFork (RaftT sm v m) where
+  type RaftThreadId (RaftT sm v m) = RaftThreadId m
   raftFork s m = do
     raftEnv <- ask
     raftState <- get
     lift $ raftFork s (runRaftT raftState raftEnv m)
 
-instance Monad m => RaftLogger v (RaftT v m) where
-  loggerCtx = (,) <$> asks (raftConfigNodeId . raftNodeConfig) <*> get
+instance Monad m => RaftLogger sm v (RaftT sm v m) where
+  loggerCtx = do
+    raftNodeState :: RaftNodeState sm v <- get
+    (,) <$> asks (raftConfigNodeId . raftNodeConfig) <*> pure raftNodeState
 
-instance Monad m => Metrics.MonadMetrics (RaftT v m) where
+instance Monad m => Metrics.MonadMetrics (RaftT sm v m) where
   getMetrics = asks raftNodeMetrics
 
 initializeRaftEnv
@@ -160,8 +163,8 @@ initializeRaftEnv
   -> m ()
   -> m ()
   -> RaftNodeConfig
-  -> LogCtx (RaftT v m)
-  -> m (RaftEnv v m)
+  -> LogCtx (RaftT sm v m)
+  -> m (RaftEnv sm v m)
 initializeRaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logCtx = do
   metrics <- liftIO Metrics.initialize
   pure RaftEnv
@@ -175,9 +178,9 @@ initializeRaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig lo
 
 runRaftT
   :: Monad m
-  => RaftNodeState v
-  -> RaftEnv v m
-  -> RaftT v m a
+  => RaftNodeState sm v
+  -> RaftEnv sm v m
+  -> RaftT sm v m a
   -> m a
 runRaftT raftNodeState raftEnv =
   flip evalStateT raftNodeState . flip runReaderT raftEnv . unRaftT
@@ -186,14 +189,14 @@ runRaftT raftNodeState raftEnv =
 -- Logging
 ------------------------------------------------------------------------------
 
-logInfo :: MonadIO m => Text -> RaftT v m ()
+logInfo :: MonadIO m => Text -> RaftT sm v m ()
 logInfo msg = flip logInfoIO msg =<< asks raftNodeLogCtx
 
-logDebug :: MonadIO m => Text -> RaftT v m ()
+logDebug :: MonadIO m => Text -> RaftT sm v m ()
 logDebug msg = flip logDebugIO msg =<< asks raftNodeLogCtx
 
-logCritical :: MonadIO m => Text -> RaftT v m ()
+logCritical :: MonadIO m => Text -> RaftT sm v m ()
 logCritical msg = flip logCriticalIO msg =<< asks raftNodeLogCtx
 
-logAndPanic :: MonadIO m => Text -> RaftT v m a
+logAndPanic :: MonadIO m => Text -> RaftT sm v m a
 logAndPanic msg = flip logAndPanicIO msg =<< asks raftNodeLogCtx

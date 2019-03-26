@@ -46,12 +46,12 @@ tellActions as = tell as
 data TransitionEnv sm v = TransitionEnv
   { nodeConfig :: RaftNodeConfig
   , stateMachine :: sm
-  , nodeState :: RaftNodeState v
+  , nodeState :: RaftNodeState sm v
   , nodeMetrics :: RaftNodeMetrics
   }
 
 newtype TransitionM sm v a = TransitionM
-  { unTransitionM :: RaftLoggerT v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) a
+  { unTransitionM :: RaftLoggerT sm v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) a
   } deriving (Functor, Applicative, Monad)
 
 instance MonadWriter [Action sm v] (TransitionM sm v) where
@@ -67,7 +67,7 @@ instance MonadState PersistentState (TransitionM sm v) where
   get = TransitionM . RaftLoggerT $ lift get
   put = TransitionM . RaftLoggerT . lift . put
 
-instance RaftLogger v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) where
+instance RaftLogger sm v (RWS (TransitionEnv sm v) [Action sm v] PersistentState) where
   loggerCtx = asks ((raftConfigNodeId . nodeConfig) &&& nodeState)
 
 runTransitionM
@@ -92,9 +92,9 @@ askPeerNodeIds = do
 -- Handlers
 --------------------------------------------------------------------------------
 
-type RPCHandler ns sm r v = (RPCType r v, Show v) => NodeState ns v -> NodeId -> r -> TransitionM sm v (ResultState ns v)
-type TimeoutHandler ns sm v = Show v => NodeState ns v -> Timeout -> TransitionM sm v (ResultState ns v)
-type ClientReqHandler ns cr sm v = (ClientReqType cr v, Show v) => NodeState ns v -> ClientId -> cr -> TransitionM sm v (ResultState ns v)
+type RPCHandler ns sm r v = (RPCType r v, Show sm, Show v) => NodeState ns sm v -> NodeId -> r -> TransitionM sm v (ResultState ns sm v)
+type TimeoutHandler ns sm v = (Show sm, Show v) => NodeState ns sm v -> Timeout -> TransitionM sm v (ResultState ns sm v)
+type ClientReqHandler ns cr sm v = (ClientReqType cr v, Show sm, Show v) => NodeState ns sm v -> ClientId -> cr -> TransitionM sm v (ResultState ns sm v)
 
 --------------------------------------------------------------------------------
 -- RWS Helpers
@@ -157,7 +157,7 @@ startElection
   -> Index
   -> LastLogEntry v
   -> ClientWriteReqCache
-  -> TransitionM sm v (CandidateState v)
+  -> TransitionM sm v (CandidateState sm v)
 startElection commitIndex lastApplied lastLogEntry clientReqCache  = do
     incrementTerm
     voteForSelf

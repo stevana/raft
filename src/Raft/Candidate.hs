@@ -46,7 +46,7 @@ import Raft.Types
 -- _strictly greater than_ the receiving node's current term. In this case,
 -- the candidate steps down if the term in the AE RPC is greater than _or_
 -- equal to its current term.
-handleAppendEntries :: RPCHandler 'Candidate sm (AppendEntries v) v
+handleAppendEntries :: forall sm v. RPCHandler 'Candidate sm (AppendEntries v) v
 handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sender AppendEntries {..} = do
   currentTerm <- gets currentTerm
   if currentTerm <= aeTerm
@@ -55,15 +55,15 @@ handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sende
   where
     becomeFollower = do
       resetElectionTimeout
-      pure $ ResultState DiscoverLeader $
-        NodeFollowerState FollowerState
-          { fsCurrentLeader = CurrentLeader (LeaderId sender)
-          , fsCommitIndex = csCommitIndex
-          , fsLastApplied = csLastApplied
-          , fsLastLogEntry = csLastLogEntry
-          , fsTermAtAEPrevIndex = Nothing
-          , fsClientReqCache = csClientReqCache
-          }
+      let followerState = FollowerState
+            { fsCurrentLeader = CurrentLeader (LeaderId sender)
+            , fsCommitIndex = csCommitIndex
+            , fsLastApplied = csLastApplied
+            , fsLastLogEntry = csLastLogEntry
+            , fsTermAtAEPrevIndex = Nothing
+            , fsClientReqCache = csClientReqCache
+            } :: FollowerState sm v
+      pure $ followerResultState DiscoverLeader followerState
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Candidate sm AppendEntriesResponse v
@@ -80,7 +80,7 @@ handleRequestVote ns@(NodeCandidateState candidateState@CandidateState{..}) send
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse
-  :: forall sm v. (Show v, S.Serialize v)
+  :: forall sm v. (Show sm, Show v, S.Serialize v)
   => RPCHandler 'Candidate sm RequestVoteResponse v
 handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
   currentTerm <- gets currentTerm
@@ -92,7 +92,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
           if not $ hasMajority cNodeIds newCsVotes
             then do
               let newCandidateState = candidateState { csVotes = newCsVotes }
-              pure $ candidateResultState Noop newCandidateState
+              pure $ candidateResultState Noop (newCandidateState :: CandidateState sm v)
             else leaderResultState BecomeLeader <$> becomeLeader
 
   where
@@ -113,7 +113,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
         , entryPrevHash = hashLastLogEntry csLastLogEntry
         }
 
-    becomeLeader :: TransitionM sm v (LeaderState v)
+    becomeLeader :: TransitionM sm v (LeaderState sm v)
     becomeLeader = do
       currentTerm <- gets currentTerm
       -- In order for leaders to know which entries have been replicated or not,
@@ -130,6 +130,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
       resetHeartbeatTimeout
       followerNodeIds <- Set.toList <$> askPeerNodeIds
       let lastLogEntryIdx = entryIndex noopEntry
+      stateMachine <- asks stateMachine
       pure LeaderState
        { lsCommitIndex = csCommitIndex
        , lsLastApplied = csLastApplied
@@ -139,6 +140,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
        , lsReadReqsHandled = 0
        , lsReadRequest = mempty
        , lsClientReqCache = csClientReqCache
+       , lsStateMachine = stateMachine
        }
 
 handleTimeout :: TimeoutHandler 'Candidate sm v

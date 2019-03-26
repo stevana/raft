@@ -1,5 +1,19 @@
 # Changelog for raft
 
+## 0.6.0.0
+
+- Feature: Optimized (reduced) the number of RPC messages sent between leader 
+  and follower for the follower to reconcile a log disparity resulting from
+  network partitions.
+
+- API change: Added a type parameter to many internal datatypes and type
+  classes, most importantly of which the `RaftT` monad transformer with which
+  raft nodes are spawned.
+
+- Bug Fix: Validation of log entries upon appending them to a node's local log 
+  no longer causes the nodes to crash; The leader now properly validates log
+  entries before replicating them to all followers.
+
 ## 0.5.0.0
 
 - Feature: Client write requests are now validated by the leader before being

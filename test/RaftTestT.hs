@@ -15,7 +15,6 @@ import Protolude hiding
   (STM, TVar, TChan, newTChan, readMVar, readTChan, writeTChan, atomically, killThread, ThreadId, readTVar, writeTVar)
 
 import Data.Sequence (Seq(..), (><), dropWhileR, (!?))
-import qualified Data.Sequence as Seq
 import qualified Data.Map as Map
 import qualified Data.Serialize as S
 import Numeric.Natural
@@ -30,7 +29,6 @@ import Control.Concurrent.Classy.STM.TChan
 import Control.Concurrent.Classy.STM.TVar
 
 import Test.DejaFu.Conc (ConcIO)
-import Test.Tasty.HUnit
 
 import Raft
 import Raft.Client

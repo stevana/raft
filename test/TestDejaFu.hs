@@ -18,17 +18,14 @@ import Protolude hiding
 import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Maybe as Maybe
-import Test.QuickCheck
-
 
 import Test.DejaFu hiding (get, ThreadId)
 import Test.DejaFu.Internal (Settings(..))
 import Test.DejaFu.Conc hiding (ThreadId)
 import Test.Tasty
-import Test.Tasty.HUnit
 import Test.Tasty.DejaFu hiding (get)
 
-import System.Random (mkStdGen, newStdGen)
+import System.Random (mkStdGen)
 import Data.List
 import TestUtils
 import RaftTestT

@@ -193,12 +193,12 @@ runRaftNode nodeConfig@RaftNodeConfig{..} optConfig logCtx initStateMachine = do
     -- because some implementations of 'MonadRaftFork' rely on these strings to
     -- reliably send messages to the event producers (e.g. cloud-haskell
     -- processes).
-    raftFork (CustomThreadRole "Election Timeout Timer") . lift $
-      electionTimeoutTimer @m @v eventChan electionTimer
-    raftFork (CustomThreadRole "Heartbeat Timeout Timer") . lift $
-      heartbeatTimeoutTimer @m @v eventChan heartbeatTimer
-    raftFork RPCHandler (rpcHandler @sm @v @m eventChan)
-    raftFork ClientRequestHandler (clientReqHandler @sm @v @m eventChan)
+    raftFork (CustomThreadRole "Election Timeout Timer") $
+      electionTimeoutTimer electionTimer
+    raftFork (CustomThreadRole "Heartbeat Timeout Timer") $
+      heartbeatTimeoutTimer heartbeatTimer
+    raftFork RPCHandler rpcHandler
+    raftFork ClientRequestHandler clientReqHandler
 
     -- Start the main event handling loop
     handleEventLoop initStateMachine
@@ -252,7 +252,7 @@ handleEventLoop initStateMachine = do
     -- the result of the continuation function wrapped in 'Just', otherwise.
     withValidatedEvent :: (Event v -> RaftT sm v m a) -> RaftT sm v m (Maybe a)
     withValidatedEvent f = do
-      event <- lift . readRaftChan =<< asks eventChan
+      event <- readRaftEventChan
       RaftNodeState raftNodeState <- get
       case raftNodeState of
         NodeLeaderState ls -> do
@@ -287,7 +287,6 @@ handleEventLoop initStateMachine = do
     handleEventLoop' stateMachine persistentState = do
 
       setInitLastLogEntry
-      Metrics.incrEventsHandledCounter
 
       mRes <-
         withValidatedEvent $ \event -> do
@@ -297,7 +296,9 @@ handleEventLoop initStateMachine = do
           -- Record the current node state as a metric
           Metrics.setNodeStateLabel (nodeMode raftNodeState)
           Metrics.setCommitIndexGauge (getCommitIndex nodeState)
+          numEventsInChan <- Metrics.getRaftNodeNumEventsInChan
 
+          logDebug $ "[# Events in Chan]: " <> show numEventsInChan
           logDebug $ "[Event]: " <> show event
           logDebug $ "[NodeState]: " <> show raftNodeState
           logDebug $ "[State Machine]: " <> show stateMachine
@@ -625,10 +626,9 @@ handleLogs logs = do
 
 -- | Producer for rpc message events
 rpcHandler
-  :: forall sm v m. (MonadIO m, MonadRaft v m, MonadCatch m, Show v, RaftRecvRPC m v)
-  => RaftEventChan v m
-  -> RaftT sm v m ()
-rpcHandler eventChan =
+  :: (MonadIO m, MonadRaft v m, MonadCatch m, Show v, RaftRecvRPC m v)
+  => RaftT sm v m ()
+rpcHandler =
   forever $ do
     eRpcMsg <- lift $ Control.Monad.Catch.try receiveRPC
     case eRpcMsg of
@@ -636,14 +636,13 @@ rpcHandler eventChan =
       Right (Left err) -> logCritical (show err)
       Right (Right rpcMsg) -> do
         let rpcMsgEvent = MessageEvent (RPCMessageEvent rpcMsg)
-        lift $ writeRaftChan @v @m eventChan rpcMsgEvent
+        writeRaftEventChan rpcMsgEvent
 
 -- | Producer for rpc message events
 clientReqHandler
-  :: forall sm v m. (MonadIO m, MonadRaft v m, MonadCatch m, RaftRecvClient m v)
-  => RaftEventChan v m
-  -> RaftT sm v m ()
-clientReqHandler eventChan =
+  :: (MonadIO m, MonadRaft v m, MonadCatch m, RaftRecvClient m v)
+  => RaftT sm v m ()
+clientReqHandler =
   forever $ do
     eClientReq <- lift $ Control.Monad.Catch.try receiveClient
     case eClientReq of
@@ -651,29 +650,29 @@ clientReqHandler eventChan =
       Right (Left err) -> logCritical (show err)
       Right (Right clientReq) -> do
         let clientReqEvent = MessageEvent (ClientRequestEvent clientReq)
-        lift $ writeRaftChan @v @m eventChan clientReqEvent
+        writeRaftEventChan clientReqEvent
 
 -- | Producer for the election timeout event
-electionTimeoutTimer :: forall m v. (MonadIO m, MonadRaft v m) => RaftEventChan v m -> Timer -> m ()
-electionTimeoutTimer eventChan timer =
+electionTimeoutTimer :: forall sm v m. (MonadIO m, MonadRaft v m) => Timer -> RaftT sm v m ()
+electionTimeoutTimer timer =
   forever $ do
     success <- liftIO $ startTimer timer
     when (not success) $
       panic "[Failed invariant]: Election timeout timer failed to start."
     liftIO $ waitTimer timer
-    writeTimeoutEvent @m @v eventChan ElectionTimeout
+    writeTimeoutEvent ElectionTimeout
 
 -- | Producer for the heartbeat timeout event
-heartbeatTimeoutTimer :: forall m v. (MonadIO m, MonadRaft v m) => RaftEventChan v m -> Timer -> m ()
-heartbeatTimeoutTimer eventChan timer =
+heartbeatTimeoutTimer :: forall sm v m. (MonadIO m, MonadRaft v m) => Timer -> RaftT sm v m ()
+heartbeatTimeoutTimer timer =
   forever $ do
     success <- liftIO $ startTimer timer
     when (not success) $
       panic "[Failed invariant]: Heartbeat timeout timer failed to start."
     liftIO $ waitTimer timer
-    writeTimeoutEvent @m @v eventChan HeartbeatTimeout
+    writeTimeoutEvent HeartbeatTimeout
 
-writeTimeoutEvent :: forall m v. (MonadIO m , MonadRaft v m) => RaftEventChan v m -> Timeout -> m ()
-writeTimeoutEvent eventChan timeout = do
+writeTimeoutEvent :: forall sm v m. (MonadIO m , MonadRaft v m) => Timeout -> RaftT sm v m ()
+writeTimeoutEvent timeout = do
   now <- liftIO getSystemTime
-  writeRaftChan @v @m eventChan (TimeoutEvent now timeout)
+  writeRaftEventChan (TimeoutEvent now timeout)

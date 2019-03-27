@@ -25,6 +25,9 @@ module Raft.Monad (
 , RaftT
 , runRaftT
 
+, writeRaftEventChan
+, readRaftEventChan
+
 
 , Raft.Monad.logInfo
 , Raft.Monad.logDebug
@@ -46,6 +49,7 @@ import Control.Concurrent.Classy.STM.TChan
 import Raft.Config
 import Raft.Event
 import Raft.Logging
+import Raft.Metrics (incrEventsReceivedCounter, incrEventsHandledCounter)
 import Raft.NodeState
 
 import Test.DejaFu.Conc (ConcIO)
@@ -184,6 +188,18 @@ runRaftT
   -> m a
 runRaftT raftNodeState raftEnv =
   flip evalStateT raftNodeState . flip runReaderT raftEnv . unRaftT
+
+writeRaftEventChan :: forall sm v m. (MonadIO m, MonadRaftChan v m) => Event v -> RaftT sm v m ()
+writeRaftEventChan e = do
+  incrEventsReceivedCounter
+  eventChan <- asks eventChan
+  lift (writeRaftChan eventChan e)
+
+readRaftEventChan :: forall sm v m. (MonadIO m, MonadRaftChan v m) => RaftT sm v m (Event v)
+readRaftEventChan = do
+  incrEventsHandledCounter
+  eventChan <- asks eventChan
+  lift (readRaftChan eventChan)
 
 ------------------------------------------------------------------------------
 -- Logging

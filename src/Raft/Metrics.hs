@@ -6,12 +6,14 @@ module Raft.Metrics
 , defaultRaftNodeMetrics
 , getMetricsStore
 , getRaftNodeMetrics
+, getRaftNodeNumEventsInChan
 , setNodeStateLabel
 , setLastLogEntryIndexGauge
 , setLastLogEntryHashLabel
 , setCommitIndexGauge
 , incrInvalidCmdCounter
 , incrEventsHandledCounter
+, incrEventsReceivedCounter
 ) where
 
 import Protolude
@@ -35,6 +37,7 @@ data RaftNodeMetrics
   = RaftNodeMetrics
   { invalidCmdCounter :: Int64
   , eventsHandledCounter :: Int64
+  , eventsReceivedCounter :: Int64
   , nodeStateLabel :: [Char]
   , lastLogHashLabel :: [Char] -- ^ Base 16 encoded last log entry hash
   , lastLogIndexGauge :: Int64
@@ -45,6 +48,7 @@ defaultRaftNodeMetrics :: RaftNodeMetrics
 defaultRaftNodeMetrics = RaftNodeMetrics
   { invalidCmdCounter = 0
   , eventsHandledCounter = 0
+  , eventsReceivedCounter = 0
   , nodeStateLabel = "Follower"
   , lastLogHashLabel = toS (unEntryHash genesisHash)
   , lastLogIndexGauge = 0
@@ -54,6 +58,7 @@ defaultRaftNodeMetrics = RaftNodeMetrics
 getMetricsStore :: (MonadIO m, Metrics.MonadMetrics m) => m EKG.Store
 getMetricsStore = Metrics._metricsStore <$> Metrics.getMetrics
 
+-- | Queries the metrics IORef for current node metrics
 getRaftNodeMetrics :: (MonadIO m, Metrics.MonadMetrics m) => m RaftNodeMetrics
 getRaftNodeMetrics = do
   metricsStore <- getMetricsStore
@@ -61,11 +66,18 @@ getRaftNodeMetrics = do
   pure RaftNodeMetrics
     { invalidCmdCounter = lookupCounterValue InvalidCmdCounter sample
     , eventsHandledCounter = lookupCounterValue EventsHandledCounter sample
+    , eventsReceivedCounter = lookupCounterValue EventsReceivedCounter sample
     , nodeStateLabel = toS (lookupLabelValue NodeStateLabel sample)
     , lastLogHashLabel = toS (lookupLastLogEntryHashLabel sample)
     , lastLogIndexGauge = lookupGaugeValue LastLogEntryIndexGauge sample
     , commitIndexGauge = lookupGaugeValue CommitIndexGauge sample
     }
+
+-- | Computes and returns the number of events in the main event channel
+getRaftNodeNumEventsInChan :: (MonadIO m, Metrics.MonadMetrics m) => m Int64
+getRaftNodeNumEventsInChan = do
+  rnms <- getRaftNodeMetrics
+  pure (eventsReceivedCounter rnms - eventsHandledCounter rnms)
 
 --------------------------------------------------------------------------------
 -- Labels
@@ -144,6 +156,7 @@ setCommitIndexGauge = setRaftNodeGauge CommitIndexGauge . fromIntegral
 data RaftNodeCounter
   = InvalidCmdCounter
   | EventsHandledCounter
+  | EventsReceivedCounter
   deriving Show
 
 lookupCounterValue :: RaftNodeCounter -> EKG.Sample -> Int64
@@ -162,3 +175,6 @@ incrInvalidCmdCounter = incrRaftNodeCounter InvalidCmdCounter
 
 incrEventsHandledCounter :: (MonadIO m, Metrics.MonadMetrics m) => m ()
 incrEventsHandledCounter = incrRaftNodeCounter EventsHandledCounter
+
+incrEventsReceivedCounter :: (MonadIO m, Metrics.MonadMetrics m) => m ()
+incrEventsReceivedCounter = incrRaftNodeCounter EventsReceivedCounter

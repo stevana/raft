@@ -16,7 +16,8 @@ import           Data.Maybe                    (isJust, isNothing)
 import           Data.TreeDiff                 (ToExpr)
 import           GHC.Generics                  (Generic, Generic1)
 import           Prelude                       hiding (notElem)
-import           System.Directory              (removePathForcibly)
+import           System.FilePath                ( (</>) )
+import           System.Directory              (removePathForcibly, getTemporaryDirectory)
 import           System.IO                     (BufferMode (NoBuffering),
                                                 Handle, IOMode (WriteMode),
                                                 hClose, hGetLine, hPutStrLn,
@@ -199,8 +200,9 @@ command h chs@ClientHandleRefs{..} cmd = go 3 0
 semantics :: Handle -> Action Concrete -> IO (Response Concrete)
 semantics h (SpawnNode port1 p) = do
   hPutStrLn h ("Spawning node on port " ++ show port1)
-  removePathForcibly ("/tmp/raft-log-" ++ show port1 ++ ".txt")
-  h' <- openFile ("/tmp/raft-log-" ++ show port1 ++ ".txt") WriteMode
+  tmpDir <- getTemporaryDirectory 
+  removePathForcibly (tmpDir </> "raft-log-" ++ show port1 ++ ".txt")
+  h' <- openFile (tmpDir </> "raft-log-" ++ show port1 ++ ".txt") WriteMode
   let port2, port3 :: Int
       (port2, port3) = case port1 of
         3000 -> (3001, 3002)
@@ -351,10 +353,14 @@ mock _m Incr {}            = pure Ack
 mock _m BreakConnection {} = pure BrokeConnection
 mock _m FixConnection {}   = pure FixedConnection
 
+logFileName :: FilePath
+logFileName = "raft-log.txt"
+
 setup :: IO Handle
 setup = do
-  removePathForcibly "/tmp/raft-log.txt"
-  h <- openFile "/tmp/raft-log.txt" WriteMode
+  tmpDir <- getTemporaryDirectory
+  removePathForcibly (tmpDir </> logFileName)
+  h <- openFile (tmpDir </> logFileName) WriteMode
   hSetBuffering h NoBuffering
   return h
 

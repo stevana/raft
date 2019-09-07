@@ -1,4 +1,4 @@
-resolver: lts-13.7
+resolver: lts-14.4
 
 packages:
 - .
@@ -12,7 +12,7 @@ extra-deps:
 - concurrency-1.6.2.0
 - dejafu-1.12.0.0
 - tasty-dejafu-1.2.1.0
-- monad-metrics-0.2.1.2
+- monad-metrics-0.2.1.4
 - ekg-0.4.0.15
 - ekg-json-0.1.0.6
 

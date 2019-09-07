@@ -447,21 +447,22 @@ have further insight.
 
     - On terminal 1:
 
-    ```$ stack exec raft-example node fresh file localhost:3001 localhost:3002 localhost:3003```
+    ```$ stack exec -- raft-example node --reset localhost:3001 --nodes "localhost:3002 localhost:3003"```
 
     - On terminal 2:
 
-    ```$ stack exec raft-example node fresh file localhost:3002 localhost:3001 localhost:3003```
+    ```$ stack exec -- raft-example node --reset localhost:3002 --nodes "localhost:3001 localhost:3003"```
 
     - On terminal 3:
 
-    ```$ stack exec raft-example node fresh file localhost:3003 localhost:3001 localhost:3002```
+    ```$ stack exec -- raft-example node --reset localhost:3003 --nodes "localhost:3001 localhost:3002"```
 
     The first node spawned should become candidate once its election's timer
     times out and request votes to other nodes. It will then become the leader,
     once it receives a majority of votes and will broadcast messages to all
     nodes at each heartbeat.
 
+    **Pending testing/verification the below for compatability with the new versions**
     **Note:** If you want to run a raft example node with _existing_ persistent data,
     pass the `existing` command line option to the `raft-example` program instead
     of `fresh`:
